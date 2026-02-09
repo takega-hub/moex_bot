@@ -100,21 +100,27 @@ class TinkoffClient:
                 to_date = to_date.replace(tzinfo=None)
             
             candles = []
+            logger.debug(f"[get_candles] Starting for {figi}, from {from_date.date()} to {to_date.date()}, interval={interval}")
             with self._get_client() as client:
                 # Tinkoff API может ограничивать количество свечей за запрос
                 # Разбиваем на батчи по дням для надежности
                 current_from = from_date
+                day_count = 0
+                total_days = (to_date - from_date).days + 1
                 
                 while current_from < to_date:
                     current_to = min(current_from + timedelta(days=1), to_date)
+                    day_count += 1
                     
                     try:
+                        logger.debug(f"[get_candles] Requesting candles for {figi}, day {day_count}/{total_days}: {current_from.date()}")
                         response = client.market_data.get_candles(
                             figi=figi,
                             from_=current_from,
                             to=current_to,
                             interval=candle_interval
                         )
+                        logger.debug(f"[get_candles] Received {len(response.candles) if response.candles else 0} candles for {current_from.date()}")
                         
                         for candle in response.candles:
                             candles.append({

@@ -1150,17 +1150,25 @@ class TradingLoop:
                         if not figi:
                             continue
                         
-                        # Update candles
+                        # Update candles (с таймаутом 60 секунд)
                         logger.debug(f"[{instrument}] Updating candles...")
-                        new_candles = await asyncio.to_thread(
-                            self.data_collector.update_candles,
-                            figi=figi,
-                            interval=self.settings.timeframe,
-                            days_back=1
-                        )
-                        
-                        if new_candles > 0:
-                            logger.info(f"[{instrument}] ✅ Collected {new_candles} new candles")
+                        try:
+                            new_candles = await asyncio.wait_for(
+                                asyncio.to_thread(
+                                    self.data_collector.update_candles,
+                                    figi=figi,
+                                    interval=self.settings.timeframe,
+                                    days_back=1
+                                ),
+                                timeout=60.0  # 60 секунд для сбора данных
+                            )
+                            
+                            if new_candles > 0:
+                                logger.info(f"[{instrument}] ✅ Collected {new_candles} new candles")
+                        except asyncio.TimeoutError:
+                            logger.error(f"[{instrument}] Timeout updating candles (60s exceeded)")
+                        except Exception as e:
+                            logger.error(f"[{instrument}] Error updating candles: {e}", exc_info=True)
                         
                         self.last_data_collection[instrument] = datetime.now()
                         
