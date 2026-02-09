@@ -1,0 +1,100 @@
+name: Deploy to Server
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  workflow_dispatch:  # Позволяет запускать вручную из GitHub UI
+
+jobs:
+  deploy:
+    name: Deploy to Production Server
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Setup SSH
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+      
+      - name: Add server to known hosts
+        run: |
+          ssh-keyscan -H ${{ secrets.SERVER_HOST }} >> ~/.ssh/known_hosts
+      
+      - name: Deploy to server
+        env:
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_PORT: ${{ secrets.SERVER_PORT || '22' }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH || '/opt/moex_bot2' }}
+        run: |
+          ssh -p $SERVER_PORT $SERVER_USER@$SERVER_HOST << 'ENDSSH'
+            set -e
+            
+            # Переходим в директорию проекта
+            cd $DEPLOY_PATH || exit 1
+            
+            # Останавливаем бота перед обновлением
+            echo "Останавливаем бота..."
+            sudo systemctl stop moex_bot || true
+            
+            # Сохраняем текущее состояние
+            if [ -f runtime_state.json ]; then
+              cp runtime_state.json runtime_state.json.backup
+            fi
+            
+            # Обновляем код из репозитория
+            echo "Обновляем код из GitHub..."
+            git fetch origin
+            git reset --hard origin/main || git reset --hard origin/master
+            
+            # Создаем виртуальное окружение если его нет
+            if [ ! -d "venv" ]; then
+              echo "Создаем виртуальное окружение..."
+              python3 -m venv venv
+            fi
+            
+            # Активируем виртуальное окружение и обновляем зависимости
+            echo "Обновляем зависимости..."
+            source venv/bin/activate
+            pip install --upgrade pip
+            
+            # Устанавливаем t-tech-investments из специального репозитория
+            pip install t-tech-investments --index-url https://opensource.tbank.ru/api/v4/projects/238/packages/pypi/simple
+            
+            # Устанавливаем остальные зависимости
+            pip install -r requirements.txt
+            
+            # Восстанавливаем runtime_state.json если был бэкап
+            if [ -f runtime_state.json.backup ]; then
+              mv runtime_state.json.backup runtime_state.json
+            fi
+            
+            # Создаем необходимые директории
+            mkdir -p logs ml_data ml_models
+            
+            # Устанавливаем права на логи
+            chmod 755 logs
+            
+            # Запускаем бота
+            echo "Запускаем бота..."
+            sudo systemctl start moex_bot
+            
+            # Проверяем статус
+            sleep 2
+            sudo systemctl status moex_bot --no-pager || true
+            
+            echo "Деплой завершен!"
+          ENDSSH
+      
+      - name: Verify deployment
+        env:
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_PORT: ${{ secrets.SERVER_PORT || '22' }}
+        run: |
+          ssh -p $SERVER_PORT $SERVER_USER@$SERVER_HOST 'sudo systemctl is-active moex_bot && echo "✅ Бот успешно запущен" || echo "❌ Бот не запущен"'

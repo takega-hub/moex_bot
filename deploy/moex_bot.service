@@ -1,0 +1,26 @@
+[Unit]
+Description=MOEX Trading Bot
+After=network.target
+
+[Service]
+Type=simple
+User=YOUR_USER
+Group=YOUR_GROUP
+WorkingDirectory=/opt/moex_bot2
+Environment="PATH=/opt/moex_bot2/venv/bin"
+ExecStart=/opt/moex_bot2/venv/bin/python /opt/moex_bot2/run_bot.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+# Ограничения ресурсов
+MemoryLimit=2G
+CPUQuota=200%
+
+# Безопасность
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,5 @@
+{
+  "confidence_threshold": 0.45,
+  "min_signal_strength": "умеренное",
+  "mtf_enabled": false
+}

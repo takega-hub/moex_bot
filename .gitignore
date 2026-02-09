@@ -1,0 +1,61 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+venv/
+ENV/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Environment variables
+.env
+.env.local
+
+# Logs
+logs/
+*.log
+
+# Database (legacy - not used anymore)
+*.db
+*.sqlite
+*.sqlite3
+
+# CSV data files (cache files are ignored, but historical files can be committed)
+ml_data/*_cache.csv
+
+# Models
+ml_models/*.pkl
+ml_models/*.joblib
+
+# State
+runtime_state.json
+*.json.bak
+
+# OS
+.DS_Store
+Thumbs.db
