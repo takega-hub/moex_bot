@@ -246,13 +246,22 @@ class TradingLoop:
             # Get historical data from storage
             logger.info(f"[{instrument}] 📊 Fetching historical data...")
             
-            # Update candles if needed
-            await asyncio.to_thread(
-                self.data_collector.update_candles,
-                figi,
-                interval=self.settings.timeframe,
-                days_back=1
-            )
+            # Update candles if needed (с таймаутом 60 секунд)
+            try:
+                await asyncio.wait_for(
+                    asyncio.to_thread(
+                        self.data_collector.update_candles,
+                        figi,
+                        interval=self.settings.timeframe,
+                        days_back=1
+                    ),
+                    timeout=60.0
+                )
+                logger.debug(f"[{instrument}] Candles updated successfully")
+            except asyncio.TimeoutError:
+                logger.error(f"[{instrument}] Timeout updating candles in process_instrument (60s exceeded)")
+            except Exception as e:
+                logger.error(f"[{instrument}] Error updating candles in process_instrument: {e}", exc_info=True)
             
             # Get candles from storage
             df = self.storage.get_candles(
@@ -455,9 +464,19 @@ class TradingLoop:
                     )
                     return
             
-            # Get lot size (quantity step)
-            lot_size = await asyncio.to_thread(self.tinkoff.get_qty_step, figi)
-            if lot_size <= 0:
+            # Get lot size (quantity step) (с таймаутом 30 секунд)
+            try:
+                lot_size = await asyncio.wait_for(
+                    asyncio.to_thread(self.tinkoff.get_qty_step, figi),
+                    timeout=30.0
+                )
+                if lot_size <= 0:
+                    lot_size = 1.0
+            except asyncio.TimeoutError:
+                logger.error(f"[{instrument}] Timeout getting lot size (30s exceeded), using default 1.0")
+                lot_size = 1.0
+            except Exception as e:
+                logger.error(f"[{instrument}] Error getting lot size: {e}, using default 1.0")
                 lot_size = 1.0
             
             # Get balance and available funds (с таймаутом 30 секунд)

@@ -55,7 +55,7 @@ class BotState:
     
     def __init__(self, state_file: str = "runtime_state.json"):
         self.state_file = Path(state_file)
-        self.lock = threading.Lock()
+        self.lock = threading.RLock()  # Используем RLock для реентерабельности
         
         # Default state
         self.is_running: bool = False

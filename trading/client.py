@@ -540,9 +540,12 @@ class TinkoffClient:
     def get_qty_step(self, figi: str) -> float:
         """Get quantity step (lot size) for instrument."""
         try:
+            logger.debug(f"[get_qty_step] Starting for {figi}")
             with self._get_client() as client:
                 # Get instrument info
+                logger.debug(f"[get_qty_step] Calling client.instruments.get_instrument_by() for {figi}...")
                 response = client.instruments.get_instrument_by(id_type=InstrumentIdType.INSTRUMENT_ID_TYPE_FIGI, id=figi)
+                logger.debug(f"[get_qty_step] get_instrument_by() completed for {figi}")
                 instrument = response.instrument
                 
                 if hasattr(instrument, 'lot'):
