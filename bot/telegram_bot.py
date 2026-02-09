@@ -518,7 +518,7 @@ class TelegramBot:
             logger.debug(f"show_instruments_settings: Found {len(all_possible)} instruments")
             
             keyboard = []
-        for ticker in all_possible:
+            for ticker in all_possible:
             status = "✅" if ticker in self.state.active_instruments else "❌"
             button_text = f"{status} {ticker}"
             
