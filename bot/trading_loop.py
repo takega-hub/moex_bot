@@ -509,6 +509,8 @@ class TradingLoop:
                             available_balance = float(rub_coin.get("availableBalance", total_balance))
             
             # Calculate total margin used by all open positions
+            # Use same margin rate as for new positions (15% for safety)
+            margin_rate_used = 0.15
             total_margin_used = 0.0
             try:
                 for ticker in self.state.active_instruments:
@@ -540,13 +542,17 @@ class TradingLoop:
                                         if pos_lot_size <= 0:
                                             pos_lot_size = 1.0
                                         
-                                        # Calculate margin for this position (12% of position value)
+                                        # Calculate margin for this position (15% of position value for safety)
+                                        # For futures, quantity is usually in lots already
+                                        # Position value = average_price * quantity * lot_size
                                         position_value = avg_price * quantity * pos_lot_size
-                                        pos_margin = position_value * 0.12
+                                        pos_margin = position_value * margin_rate_used
                                         total_margin_used += pos_margin
-                                        logger.debug(
-                                            f"[{instrument}] Position {ticker}: "
-                                            f"qty={quantity}, price={avg_price:.2f}, "
+                                        logger.info(
+                                            f"[{instrument}] 📊 Position {ticker}: "
+                                            f"qty={quantity} lots, price={avg_price:.2f}, "
+                                            f"lot_size={pos_lot_size}, "
+                                            f"position_value={position_value:.2f} руб, "
                                             f"margin={pos_margin:.2f} руб"
                                         )
                     except asyncio.TimeoutError:
@@ -584,7 +590,8 @@ class TradingLoop:
             
             # Calculate position size
             # For Tinkoff futures, margin is typically ~12% of position value
-            margin_rate = 0.12  # 12% margin requirement for Tinkoff futures
+            # Use 15% for safety margin (more conservative)
+            margin_rate = 0.15  # 15% margin requirement (conservative, actual is ~12%)
             
             if lot_size <= 0:
                 lot_size = 1.0
@@ -614,17 +621,22 @@ class TradingLoop:
                 elif balance >= margin_per_lot:
                     # Balance is enough for 1 lot, but percentage isn't - use more (up to balance)
                     # Use a higher percentage or minimum needed for 1 lot
-                    min_needed = margin_per_lot * 1.1  # 10% buffer
+                    min_needed = margin_per_lot * 1.2  # 20% buffer for safety
                     available_margin = min(min_needed, balance)
                 else:
                     # Balance is too small even for 1 lot
                     available_margin = balance
             
+            # Apply safety margin: use only 85% of available margin to account for exchange requirements
+            # Exchange may require more margin than calculated due to volatility, fees, etc.
+            safety_factor = 0.85
+            available_margin = available_margin * safety_factor
+            
             # Check if we have enough margin for at least 1 lot
             if available_margin < margin_per_lot:
                 logger.warning(
                     f"[{instrument}] ⚠️ Insufficient margin for position. "
-                    f"Available: {available_margin:.2f} руб, "
+                    f"Available (after safety): {available_margin:.2f} руб, "
                     f"Required for 1 lot: {margin_per_lot:.2f} руб, "
                     f"Total balance: {total_balance:.2f} руб, "
                     f"Margin used: {total_margin_used:.2f} руб. "
@@ -648,15 +660,25 @@ class TradingLoop:
                 )
                 return
             
+            # Calculate required margin for the order
+            required_margin = margin_per_lot * lots
+            
             logger.info(
                 f"[{instrument}] 💰 Position sizing: "
-                f"Available: {available_margin:.2f} руб, "
+                f"Available margin: {available_margin:.2f} руб, "
                 f"Lots: {lots}, "
-                f"Margin per lot: {margin_per_lot:.2f} руб"
+                f"Margin per lot: {margin_per_lot:.2f} руб, "
+                f"Required margin: {required_margin:.2f} руб, "
+                f"Safety buffer: {(available_margin - required_margin):.2f} руб"
             )
             
             # Place order
             direction = "Buy" if signal.action == Action.LONG else "Sell"
+            
+            logger.info(
+                f"[{instrument}] 📤 Placing order: {direction} {lots} lots @ {current_price:.2f}, "
+                f"Required margin: {required_margin:.2f} руб"
+            )
             
             resp = await asyncio.to_thread(
                 self.tinkoff.place_order,
@@ -708,10 +730,15 @@ class TradingLoop:
                         f"Total balance: {total_balance:.2f} руб, "
                         f"Margin used: {total_margin_used:.2f} руб"
                     )
-                    # Try with fewer lots
+                    # Try with fewer lots - reduce more aggressively
                     if lots > 1:
-                        reduced_lots = max(1, lots - 1)
-                        logger.info(f"[{instrument}] 🔄 Retrying with reduced lots: {reduced_lots}")
+                        # Reduce by 20% or at least 1 lot, whichever is more
+                        reduction = max(1, int(lots * 0.2))
+                        reduced_lots = max(1, lots - reduction)
+                        logger.info(
+                            f"[{instrument}] 🔄 Retrying with reduced lots: {reduced_lots} "
+                            f"(reduced by {reduction} from {lots})"
+                        )
                         resp2 = await asyncio.to_thread(
                             self.tinkoff.place_order,
                             figi=figi,
