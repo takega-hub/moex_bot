@@ -59,3 +59,8 @@ runtime_state.json
 # OS
 .DS_Store
 Thumbs.db
+# CSV data files (cache files are ignored, but historical files can be committed)
+ml_data/*_cache.csv
+
+# Игнорируем все CSV файлы с данными (генерируются ботом)
+ml_data/*.csv
