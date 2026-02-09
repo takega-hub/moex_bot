@@ -2,6 +2,7 @@
 import logging
 import asyncio
 import json
+import sys
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 from datetime import datetime, timedelta
@@ -402,6 +403,16 @@ class TelegramBot:
                     ticker = parts[0]
                     model_index = int(parts[1])
                     await self.apply_selected_model(query, ticker, model_index)
+            elif query.data.startswith("test_all_"):
+                ticker = query.data.replace("test_all_", "")
+                user_id = query.from_user.id
+                await query.answer("🧪 Начато тестирование моделей...")
+                asyncio.create_task(self.test_all_models_async(ticker, user_id))
+            elif query.data.startswith("retrain_"):
+                ticker = query.data.replace("retrain_", "")
+                user_id = query.from_user.id
+                await query.answer("🎓 Начато обучение моделей...")
+                asyncio.create_task(self.retrain_models_async(ticker, user_id))
             elif query.data == "settings_risk":
                 await self.show_risk_settings(query)
             elif query.data.startswith("edit_risk_"):
@@ -611,10 +622,13 @@ class TelegramBot:
                 else:
                     await update.message.reply_text(
                         f"✅ Инструмент {ticker} добавлен!\n\n"
-                        "⚠️ Модели не найдены. Обучите модели командой:\n"
-                        f"python train_models.py --ticker {ticker}",
+                        "🔄 Автоматически запущено обучение моделей...\n"
+                        "Вы получите уведомление по завершении.",
                         reply_markup=self.get_main_keyboard()
                     )
+                    # Автоматически запускаем обучение моделей
+                    user_id = update.message.from_user.id
+                    asyncio.create_task(self.retrain_models_async(ticker, user_id))
                 
             except Exception as e:
                 logger.error(f"Error validating/adding ticker {ticker}: {e}")
@@ -741,16 +755,16 @@ class TelegramBot:
         await self.safe_edit_message(query, text, reply_markup=InlineKeyboardMarkup(keyboard))
 
     async def show_model_selection(self, query, ticker: str):
-        """Показывает выбор модели для инструмента."""
+        """Показывает выбор модели для инструмента с результатами тестов."""
         models = self.model_manager.find_models_for_instrument(ticker)
         
         if not models:
             await self.safe_edit_message(
                 query,
                 f"❌ Для {ticker} не найдено моделей.\n\n"
-                "Обучите модели командой:\n"
-                f"python train_models.py --ticker {ticker}",
+                "Используйте кнопку 'Обучить модели' для создания моделей.",
                 reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🎓 Обучить модели", callback_data=f"retrain_{ticker}")],
                     [InlineKeyboardButton("🔙 Назад", callback_data="settings_models")]
                 ])
             )
@@ -759,16 +773,46 @@ class TelegramBot:
         text = f"📌 ВЫБОР МОДЕЛИ ДЛЯ {ticker}:\n\n"
         keyboard = []
         
+        # Загружаем результаты тестов
+        test_results = self.model_manager.get_model_test_results(ticker)
+        
+        # Проверяем, есть ли хотя бы одна протестированная модель
+        has_tested = any(str(m) in test_results for m in models)
+        
         for idx, model_path in enumerate(models):
             model_name = model_path.stem
             is_current = self.state.instrument_models.get(ticker) == str(model_path)
             prefix = "✅ " if is_current else ""
-            text += f"{prefix}{model_name}\n"
+            
+            # Получаем результаты теста для этой модели
+            model_results = test_results.get(str(model_path), {})
+            
+            if model_results:
+                pnl = model_results.get("total_pnl_pct", 0)
+                winrate = model_results.get("win_rate", 0)
+                trades = model_results.get("total_trades", 0)
+                trades_per_day = model_results.get("trades_per_day", 0)
+                profit_factor = model_results.get("profit_factor", 0)
+                
+                pnl_sign = "+" if pnl >= 0 else ""
+                pnl_color = "🟢" if pnl > 0 else "🔴" if pnl < 0 else "⚪"
+                text += f"{prefix}{pnl_color} {model_name}\n"
+                text += f"   PnL: {pnl_sign}{pnl:.2f}% | WR: {winrate:.1f}% | PF: {profit_factor:.2f}\n"
+                text += f"   Сделок: {trades} ({trades_per_day:.1f}/день)\n\n"
+            else:
+                text += f"{prefix}⚪ {model_name} (не тестирована)\n\n"
+            
             keyboard.append([InlineKeyboardButton(
                 f"{'✅ ' if is_current else ''}{model_name}",
                 callback_data=f"apply_model_{ticker}_{idx}"
             )])
         
+        if not has_tested:
+            keyboard.append([InlineKeyboardButton("🧪 Тестировать все модели (14 дней)", callback_data=f"test_all_{ticker}")])
+        else:
+            keyboard.append([InlineKeyboardButton("🔄 Обновить тесты", callback_data=f"test_all_{ticker}")])
+        
+        keyboard.append([InlineKeyboardButton("🎓 Обучить все модели", callback_data=f"retrain_{ticker}")])
         keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="settings_models")])
         keyboard.append([InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")])
         
@@ -1435,5 +1479,154 @@ class TelegramBot:
                     chat_id=self.settings.allowed_user_id,
                     text=text
                 )
+    
+    async def send_notification(self, text: str, user_id: Optional[int] = None):
+        """Send notification to user."""
+        target_user_id = user_id or self.settings.allowed_user_id
+        if not target_user_id:
+            return
+        
+        try:
+            if self.app:
+                await self.app.bot.send_message(
+                    chat_id=target_user_id,
+                    text=text
+                )
+        except Exception as e:
+            logger.error(f"Error sending notification: {e}")
+    
+    async def test_all_models_async(self, ticker: str, user_id: int):
+        """Тестирует все модели для инструмента"""
+        try:
+            models = self.model_manager.find_models_for_instrument(ticker)
+            if not models:
+                await self.send_notification(f"❌ Для {ticker} не найдено моделей для тестирования.", user_id)
+                return
+            
+            await self.send_notification(f"🧪 Начато тестирование {len(models)} моделей для {ticker}...", user_id)
+            
+            tested = 0
+            for model_path in models:
+                model_name = model_path.stem
+                await self.send_notification(f"🧪 Тестирую {model_name}...", user_id)
+                
+                try:
+                    results = self.model_manager.test_model(model_path, ticker, days=14)
+                    
+                    if results:
+                        self.model_manager.save_model_test_result(ticker, str(model_path), results)
+                        tested += 1
+                        await self.send_notification(
+                            f"✅ {model_name}:\n"
+                            f"PnL: {results['total_pnl_pct']:+.2f}% | "
+                            f"WR: {results['win_rate']:.1f}% | "
+                            f"Сделок: {results['total_trades']} ({results['trades_per_day']:.1f}/день)",
+                            user_id
+                        )
+                    else:
+                        await self.send_notification(f"❌ Ошибка при тестировании {model_name}\n(проверьте логи для деталей)", user_id)
+                except Exception as e:
+                    logger.error(f"Error testing {model_name}: {e}", exc_info=True)
+                    await self.send_notification(f"❌ Ошибка при тестировании {model_name}:\n{str(e)[:200]}", user_id)
+            
+            await self.send_notification(
+                f"✅ Тестирование завершено!\n"
+                f"Протестировано: {tested}/{len(models)} моделей",
+                user_id
+            )
+            
+        except Exception as e:
+            logger.error(f"Error testing models for {ticker}: {e}")
+            await self.send_notification(f"❌ Ошибка при тестировании моделей: {str(e)}", user_id)
+    
+    async def retrain_models_async(self, ticker: str, user_id: int):
+        """Обучает все модели для конкретного инструмента"""
+        import subprocess
+        from pathlib import Path
+        
+        try:
+            await self.send_notification(
+                f"🎓 Начато обучение всех моделей для {ticker}...\n"
+                "Это может занять 10-30 минут.\n"
+                "Вы будете получать уведомления о прогрессе.",
+                user_id
+            )
+            
+            # Путь к скрипту обучения
+            script_path = Path("train_models.py")
+            
+            if not script_path.exists():
+                await self.send_notification(f"❌ Скрипт обучения не найден: {script_path}", user_id)
+                return
+            
+            # Определяем параметры MTF из настроек
+            use_mtf = getattr(self.settings.ml_strategy, 'mtf_enabled', False)
+            cmd_args = [sys.executable, str(script_path), "--ticker", ticker]
+            
+            # Добавляем параметры MTF
+            if use_mtf:
+                cmd_args.append("--mtf")
+            else:
+                cmd_args.append("--no-mtf")
+            
+            # Запускаем обучение в отдельном процессе
+            process = await asyncio.create_subprocess_exec(
+                *cmd_args,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=str(script_path.parent)
+            )
+            
+            # Отслеживаем вывод
+            trained_models = []
+            current_model = None
+            
+            while True:
+                line = await process.stdout.readline()
+                if not line:
+                    break
+                
+                line_text = line.decode('utf-8', errors='ignore').strip()
+                
+                # Парсим вывод для уведомлений
+                if "Обучение:" in line_text and ticker in line_text:
+                    parts = line_text.split("Обучение:")
+                    if len(parts) > 1:
+                        model_name = parts[1].strip().split()[0] if parts[1].strip() else None
+                        if model_name:
+                            current_model = model_name
+                            await self.send_notification(f"🔄 Обучение модели: {model_name} для {ticker}...", user_id)
+                
+                if "✅" in line_text and current_model:
+                    trained_models.append(current_model)
+                    await self.send_notification(f"✅ {current_model} обучена для {ticker}", user_id)
+                    current_model = None
+                
+                if "❌" in line_text and current_model:
+                    await self.send_notification(f"❌ Ошибка при обучении {current_model} для {ticker}", user_id)
+                    current_model = None
+            
+            # Ждем завершения процесса
+            await process.wait()
+            
+            if process.returncode == 0:
+                await self.send_notification(
+                    f"✅ Обучение всех моделей для {ticker} завершено!\n"
+                    f"Обучено моделей: {len(trained_models)}\n\n"
+                    "Обновите список моделей для просмотра результатов.",
+                    user_id
+                )
+            else:
+                # Читаем ошибки
+                stderr = await process.stderr.read()
+                error_msg = stderr.decode('utf-8', errors='ignore')[:500]
+                await self.send_notification(
+                    f"❌ Ошибка при обучении моделей для {ticker}:\n{error_msg}",
+                    user_id
+                )
+                
+        except Exception as e:
+            logger.error(f"Error retraining models for {ticker}: {e}", exc_info=True)
+            await self.send_notification(f"❌ Ошибка при обучении моделей для {ticker}: {str(e)}", user_id)
         except Exception as e:
             logger.error(f"Error sending Telegram message: {e}")

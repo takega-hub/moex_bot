@@ -774,6 +774,91 @@ class TradingLoop:
         except Exception as e:
             logger.error(f"Error handling closed position {figi}: {e}")
     
+    async def handle_externally_opened_position(self, figi: str, instrument: str):
+        """Handle position that was opened externally (not by bot)."""
+        try:
+            # Get full position details from exchange
+            pos_info = await asyncio.to_thread(self.tinkoff.get_position_info, figi=figi)
+            
+            if not pos_info or pos_info.get("retCode") != 0:
+                logger.warning(f"[{instrument}] Could not get position details from exchange")
+                return
+            
+            positions_list = pos_info.get("result", {}).get("list", [])
+            if not positions_list:
+                logger.warning(f"[{instrument}] No position found in exchange response")
+                return
+            
+            # Find the position for this FIGI
+            exchange_pos = None
+            for pos in positions_list:
+                if pos.get("figi") == figi:
+                    quantity = float(pos.get("quantity", 0))
+                    if abs(quantity) > 0:
+                        exchange_pos = pos
+                        break
+            
+            if not exchange_pos:
+                logger.warning(f"[{instrument}] Position not found in exchange response")
+                return
+            
+            # Extract position details
+            quantity = float(exchange_pos.get("quantity", 0))
+            average_price = float(exchange_pos.get("average_price", 0))
+            current_price = float(exchange_pos.get("current_price", 0))
+            
+            if average_price <= 0:
+                logger.warning(f"[{instrument}] Invalid average price from exchange: {average_price}")
+                return
+            
+            # Determine side
+            side = "Buy" if quantity > 0 else "Sell"
+            abs_quantity = abs(quantity)
+            
+            # Create trade record for externally opened position
+            trade = TradeRecord(
+                instrument=instrument,
+                side=side,
+                entry_price=average_price,
+                quantity=abs_quantity,
+                status="open",
+                model_name=self.state.instrument_models.get(instrument, ""),
+                take_profit=None,  # Unknown for externally opened positions
+                stop_loss=None     # Unknown for externally opened positions
+            )
+            
+            # Add to state
+            self.state.add_trade(trade)
+            
+            # Calculate current PnL for logging
+            if side == "Buy":
+                pnl_pct = ((current_price - average_price) / average_price) * 100 if average_price > 0 else 0
+            else:
+                pnl_pct = ((average_price - current_price) / average_price) * 100 if average_price > 0 else 0
+            
+            margin = average_price * abs_quantity * 0.12  # Approximate margin
+            pnl_usd = (pnl_pct / 100) * margin
+            
+            logger.info(
+                f"[{instrument}] ✅ Synced externally opened position: "
+                f"{side} {abs_quantity} lots @ {average_price:.2f} руб. "
+                f"Current PnL: {pnl_usd:.2f} руб ({pnl_pct:.2f}%)"
+            )
+            
+            # Notify via Telegram if available
+            if self.tg_bot:
+                await self.tg_bot.send_message(
+                    f"⚠️ Обнаружена внешняя позиция {side} {instrument}\n"
+                    f"Цена входа: {average_price:.2f} руб\n"
+                    f"Лотов: {abs_quantity}\n"
+                    f"Текущая цена: {current_price:.2f} руб\n"
+                    f"PnL: {pnl_usd:.2f} руб ({pnl_pct:.2f}%)\n"
+                    f"Позиция добавлена в локальное состояние для отслеживания."
+                )
+            
+        except Exception as e:
+            logger.error(f"[{instrument}] Error handling externally opened position: {e}", exc_info=True)
+    
     async def sync_positions_with_exchange(self):
         """Sync positions with exchange - check if local state matches exchange reality."""
         logger.info("🔄 Syncing positions with exchange...")
@@ -828,8 +913,9 @@ class TradingLoop:
                     elif figi in exchange_positions and abs(exchange_positions[figi]) > 0:
                         logger.info(
                             f"[{instrument}] ⚠️ Exchange shows position but local state doesn't. "
-                            f"This might be a position opened externally."
+                            f"Syncing externally opened position..."
                         )
+                        await self.handle_externally_opened_position(figi, instrument)
                         
                 except Exception as e:
                     logger.error(f"Error syncing position for {instrument}: {e}")
