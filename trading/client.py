@@ -154,6 +154,7 @@ class TinkoffClient:
             Dict with instrument info: figi, ticker, name, instrument_type
         """
         try:
+            logger.debug(f"[find_instrument] Starting search for ticker={ticker}, type={instrument_type}")
             with self._get_client() as client:
                 # Сначала пробуем использовать find_instrument для быстрого поиска
                 try:
@@ -167,11 +168,13 @@ class TinkoffClient:
                         instrument_kind = InstrumentType.INSTRUMENT_TYPE_BOND
                     
                     # Пробуем поиск по точному тикеру
+                    logger.debug(f"[find_instrument] Calling client.instruments.find_instrument() for {ticker}...")
                     find_response = client.instruments.find_instrument(
                         query=ticker,
                         instrument_kind=instrument_kind,
                         api_trade_available_flag=True
                     )
+                    logger.debug(f"[find_instrument] find_instrument() completed, found {len(find_response.instruments) if find_response.instruments else 0} instruments")
                     
                     if find_response.instruments:
                         # Найдены инструменты, берем первый подходящий по тикеру
@@ -201,9 +204,10 @@ class TinkoffClient:
                 # Fallback: перебор всех инструментов
                 if instrument_type == "futures":
                     # Ищем фьючерсы
-                    logger.debug(f"Searching through all futures for ticker: {ticker}")
+                    logger.debug(f"[find_instrument] Fallback: Searching through all futures for ticker: {ticker}")
+                    logger.debug(f"[find_instrument] Calling client.instruments.futures()...")
                     response = client.instruments.futures()
-                    logger.debug(f"Total futures found: {len(response.instruments)}")
+                    logger.debug(f"[find_instrument] futures() completed, Total futures found: {len(response.instruments)}")
                     
                     # Сначала ищем точное совпадение
                     matching_instruments = []
@@ -282,10 +286,10 @@ class TinkoffClient:
                                 "instrument_type": "bonds"
                             }
             
-            logger.warning(f"Instrument {ticker} ({instrument_type}) not found")
+            logger.warning(f"[find_instrument] Instrument {ticker} ({instrument_type}) not found")
             return None
         except Exception as e:
-            logger.error(f"Error finding instrument {ticker}: {e}")
+            logger.error(f"[find_instrument] Error finding instrument {ticker}: {e}", exc_info=True)
             return None
     
     def get_kline_df(
@@ -368,8 +372,20 @@ class TinkoffClient:
             Dict with position information
         """
         try:
+            logger.debug(f"[get_position_info] Starting, figi={figi}")
             with self._get_client() as client:
-                response = client.operations.get_portfolio(account_id=client.users.get_accounts().accounts[0].id)
+                logger.debug("[get_position_info] Calling client.users.get_accounts()...")
+                accounts = client.users.get_accounts()
+                logger.debug(f"[get_position_info] get_accounts() completed, found {len(accounts.accounts) if accounts.accounts else 0} accounts")
+                
+                if not accounts.accounts:
+                    logger.warning("[get_position_info] No accounts found")
+                    return {"retCode": -1, "retMsg": "No accounts found", "result": {"list": []}}
+                
+                account_id = accounts.accounts[0].id
+                logger.debug(f"[get_position_info] Calling client.operations.get_portfolio() for account_id={account_id}...")
+                response = client.operations.get_portfolio(account_id=account_id)
+                logger.debug(f"[get_position_info] get_portfolio() completed, found {len(response.positions) if response.positions else 0} positions")
                 
                 positions = []
                 for position in response.positions:

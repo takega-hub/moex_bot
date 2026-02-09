@@ -222,8 +222,18 @@ class TelegramBot:
                         continue
                     figi = instrument_info["figi"]
                     
-                    # Проверяем позицию на бирже
-                    pos_info = await asyncio.to_thread(self.tinkoff.get_position_info, figi=figi)
+                    # Проверяем позицию на бирже (с таймаутом 30 секунд)
+                    try:
+                        pos_info = await asyncio.wait_for(
+                            asyncio.to_thread(self.tinkoff.get_position_info, figi=figi),
+                            timeout=30.0
+                        )
+                    except asyncio.TimeoutError:
+                        logger.error(f"Timeout getting position info in show_status (30s exceeded)")
+                        pos_info = None
+                    except Exception as e:
+                        logger.error(f"Error getting position info in show_status: {e}")
+                        pos_info = None
                     exchange_has_position = False
                     exchange_pos = None
                     
@@ -549,13 +559,27 @@ class TelegramBot:
                     )
                     return
                 
-                # Пытаемся найти инструмент
-                instrument_info = await asyncio.to_thread(
-                    self.tinkoff.find_instrument,
-                    ticker,
-                    instrument_type="futures",
-                    prefer_perpetual=False
-                )
+                # Пытаемся найти инструмент (с таймаутом 30 секунд)
+                logger.info(f"Searching for instrument {ticker} via Tinkoff API...")
+                try:
+                    instrument_info = await asyncio.wait_for(
+                        asyncio.to_thread(
+                            self.tinkoff.find_instrument,
+                            ticker,
+                            instrument_type="futures",
+                            prefer_perpetual=False
+                        ),
+                        timeout=30.0
+                    )
+                    logger.info(f"Instrument {ticker} search completed: found={instrument_info is not None}")
+                except asyncio.TimeoutError:
+                    logger.error(f"Timeout searching for instrument {ticker} (30s exceeded)")
+                    await update.message.reply_text(
+                        f"❌ Таймаут при поиске инструмента {ticker}.\n"
+                        "Попробуйте позже или проверьте подключение к интернету.",
+                        reply_markup=self.get_main_keyboard()
+                    )
+                    return
                 
                 if not instrument_info:
                     await update.message.reply_text(
@@ -565,23 +589,38 @@ class TelegramBot:
                     )
                     return
                 
-                # Сохраняем информацию об инструменте
-                await asyncio.to_thread(
-                    self.storage.save_instrument,
-                    figi=instrument_info["figi"],
-                    ticker=ticker,
-                    name=instrument_info["name"],
-                    instrument_type=instrument_info.get("instrument_type", "futures")
-                )
+                # Сохраняем информацию об инструменте (с таймаутом 10 секунд)
+                logger.info(f"Saving instrument {ticker} to storage...")
+                try:
+                    await asyncio.wait_for(
+                        asyncio.to_thread(
+                            self.storage.save_instrument,
+                            figi=instrument_info["figi"],
+                            ticker=ticker,
+                            name=instrument_info["name"],
+                            instrument_type=instrument_info.get("instrument_type", "futures")
+                        ),
+                        timeout=10.0
+                    )
+                    logger.info(f"Instrument {ticker} saved successfully")
+                except asyncio.TimeoutError:
+                    logger.error(f"Timeout saving instrument {ticker} (10s exceeded)")
+                    await update.message.reply_text(
+                        f"⚠️ Инструмент {ticker} найден, но произошла ошибка при сохранении.\n"
+                        "Попробуйте еще раз.",
+                        reply_markup=self.get_main_keyboard()
+                    )
+                    return
                 
                 # Добавляем в известные
                 if ticker not in self.state.known_instruments:
                     self.state.known_instruments.append(ticker)
-                    self.state.save()
+                    logger.info(f"Added {ticker} to known_instruments")
                 
                 # Включаем инструмент
                 if hasattr(self.state, 'enable_instrument'):
                     enable_result = self.state.enable_instrument(ticker)
+                    logger.info(f"enable_instrument({ticker}) returned: {enable_result}")
                     if enable_result is None:
                         await update.message.reply_text(
                             f"⚠️ Инструмент {ticker} сохранен, но лимит активных инструментов достигнут.\n"
@@ -589,18 +628,26 @@ class TelegramBot:
                             reply_markup=self.get_main_keyboard()
                         )
                         return
+                    elif enable_result:
+                        logger.info(f"✅ Instrument {ticker} successfully enabled via enable_instrument()")
                 else:
                     # Простое добавление
                     if len(self.state.active_instruments) < self.state.max_active_instruments:
                         if ticker not in self.state.active_instruments:
                             self.state.active_instruments.append(ticker)
-                            self.state.save()
+                            logger.info(f"✅ Added {ticker} to active_instruments (simple method)")
+                        else:
+                            logger.info(f"ℹ️ {ticker} already in active_instruments")
                     else:
                         await update.message.reply_text(
                             f"⚠️ Достигнут лимит активных инструментов ({self.state.max_active_instruments}).",
                             reply_markup=self.get_main_keyboard()
                         )
                         return
+                
+                # Сохраняем состояние после всех изменений
+                self.state.save()
+                logger.info(f"✅ State saved. Active instruments: {self.state.active_instruments}, Known: {self.state.known_instruments}")
                 
                 # Проверяем, есть ли модели
                 existing_models = self.model_manager.find_models_for_instrument(ticker)
@@ -1342,8 +1389,20 @@ class TelegramBot:
                             continue
                         figi = instrument_info["figi"]
                         
-                        pos_info = await asyncio.to_thread(self.tinkoff.get_position_info, figi=figi)
-                        if pos_info.get("retCode") == 0:
+                        # Получаем позицию (с таймаутом 30 секунд)
+                        try:
+                            pos_info = await asyncio.wait_for(
+                                asyncio.to_thread(self.tinkoff.get_position_info, figi=figi),
+                                timeout=30.0
+                            )
+                        except asyncio.TimeoutError:
+                            logger.error(f"Timeout getting position info for {ticker} (30s exceeded)")
+                            pos_info = None
+                        except Exception as e:
+                            logger.error(f"Error getting position info for {ticker}: {e}")
+                            pos_info = None
+                        
+                        if pos_info and pos_info.get("retCode") == 0:
                             list_data = pos_info.get("result", {}).get("list", [])
                             for p in list_data:
                                 quantity = safe_float(p.get("quantity"), 0)
@@ -1415,8 +1474,20 @@ class TelegramBot:
                         continue
                     figi = instrument_info["figi"]
                     
-                    pos_info = await asyncio.to_thread(self.tinkoff.get_position_info, figi=figi)
-                    if pos_info.get("retCode") == 0:
+                    # Получаем позицию (с таймаутом 30 секунд)
+                    try:
+                        pos_info = await asyncio.wait_for(
+                            asyncio.to_thread(self.tinkoff.get_position_info, figi=figi),
+                            timeout=30.0
+                        )
+                    except asyncio.TimeoutError:
+                        logger.error(f"Timeout getting position info for {ticker} (30s exceeded)")
+                        pos_info = None
+                    except Exception as e:
+                        logger.error(f"Error getting position info for {ticker}: {e}")
+                        pos_info = None
+                    
+                    if pos_info and pos_info.get("retCode") == 0:
                         list_data = pos_info.get("result", {}).get("list", [])
                         for p in list_data:
                             quantity = safe_float(p.get("quantity"), 0)

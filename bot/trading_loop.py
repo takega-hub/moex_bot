@@ -153,8 +153,18 @@ class TradingLoop:
                     logger.info(f"📊 Position Monitoring: Cycle {cycle_count}")
                     await self.sync_positions_with_exchange()
                 
-                # Get all positions
-                pos_info = await asyncio.to_thread(self.tinkoff.get_position_info)
+                # Get all positions (с таймаутом 30 секунд)
+                try:
+                    pos_info = await asyncio.wait_for(
+                        asyncio.to_thread(self.tinkoff.get_position_info),
+                        timeout=30.0
+                    )
+                except asyncio.TimeoutError:
+                    logger.error("Timeout getting position info in _position_monitoring_loop (30s exceeded)")
+                    pos_info = None
+                except Exception as e:
+                    logger.error(f"Error getting position info in _position_monitoring_loop: {e}")
+                    pos_info = None
                 
                 if pos_info and pos_info.get("retCode") == 0:
                     positions = pos_info.get("result", {}).get("list", [])
@@ -295,8 +305,19 @@ class TradingLoop:
                 row = df.iloc[-1]
                 current_price = row['close']
             
-            # Get position info
-            pos_info = await asyncio.to_thread(self.tinkoff.get_position_info, figi=figi)
+            # Get position info (с таймаутом 30 секунд)
+            try:
+                pos_info = await asyncio.wait_for(
+                    asyncio.to_thread(self.tinkoff.get_position_info, figi=figi),
+                    timeout=30.0
+                )
+            except asyncio.TimeoutError:
+                logger.error(f"[{instrument}] Timeout getting position info (30s exceeded)")
+                pos_info = None
+            except Exception as e:
+                logger.error(f"[{instrument}] Error getting position info: {e}")
+                pos_info = None
+            
             has_pos = None
             
             if pos_info and pos_info.get("retCode") == 0:
@@ -371,8 +392,19 @@ class TradingLoop:
         try:
             logger.info(f"[{instrument}] 🚀 execute_trade() called")
             
-            # Check exchange position FIRST (source of truth)
-            pos_info = await asyncio.to_thread(self.tinkoff.get_position_info, figi=figi)
+            # Check exchange position FIRST (source of truth) (с таймаутом 30 секунд)
+            try:
+                pos_info = await asyncio.wait_for(
+                    asyncio.to_thread(self.tinkoff.get_position_info, figi=figi),
+                    timeout=30.0
+                )
+            except asyncio.TimeoutError:
+                logger.error(f"[{instrument}] Timeout getting position info in execute_trade (30s exceeded)")
+                return
+            except Exception as e:
+                logger.error(f"[{instrument}] Error getting position info in execute_trade: {e}")
+                return
+            
             exchange_has_position = False
             exchange_quantity = 0.0
             
@@ -788,8 +820,18 @@ class TradingLoop:
     async def handle_externally_opened_position(self, figi: str, instrument: str):
         """Handle position that was opened externally (not by bot)."""
         try:
-            # Get full position details from exchange
-            pos_info = await asyncio.to_thread(self.tinkoff.get_position_info, figi=figi)
+            # Get full position details from exchange (с таймаутом 30 секунд)
+            try:
+                pos_info = await asyncio.wait_for(
+                    asyncio.to_thread(self.tinkoff.get_position_info, figi=figi),
+                    timeout=30.0
+                )
+            except asyncio.TimeoutError:
+                logger.error(f"Timeout getting position info in handle_position_closed (30s exceeded)")
+                pos_info = None
+            except Exception as e:
+                logger.error(f"Error getting position info in handle_position_closed: {e}")
+                pos_info = None
             
             if not pos_info or pos_info.get("retCode") != 0:
                 logger.warning(f"[{instrument}] Could not get position details from exchange")
@@ -875,8 +917,18 @@ class TradingLoop:
         logger.info("🔄 Syncing positions with exchange...")
         
         try:
-            # Get all positions from exchange
-            pos_info = await asyncio.to_thread(self.tinkoff.get_position_info)
+            # Get all positions from exchange (с таймаутом 30 секунд)
+            try:
+                pos_info = await asyncio.wait_for(
+                    asyncio.to_thread(self.tinkoff.get_position_info),
+                    timeout=30.0
+                )
+            except asyncio.TimeoutError:
+                logger.error("Timeout getting position info in sync_positions (30s exceeded)")
+                pos_info = None
+            except Exception as e:
+                logger.error(f"Error getting position info in sync_positions: {e}")
+                pos_info = None
             
             if not pos_info or pos_info.get("retCode") != 0:
                 logger.warning("Could not get positions from exchange for sync")
