@@ -565,22 +565,23 @@ class TradingLoop:
                 logger.warning(f"[{instrument}] Error calculating total margin used: {e}")
             
             # Use availableBalance from API directly - exchange knows best what's available
-            # But also calculate our own estimate for comparison
+            # Apply very conservative safety factor (50%) to account for exchange's internal calculations
+            # Exchange may have additional requirements (variation margin, fees, etc.)
+            api_available_safe = available_balance * 0.5  # Use only 50% of API available balance
+            
+            # Also calculate our own estimate for comparison
             calculated_available = total_balance - total_margin_used
             if calculated_available < 0:
                 calculated_available = 0.0
             
-            # Use the minimum of API availableBalance and our calculated value
-            # This is more conservative and accounts for exchange's internal calculations
-            # Also apply additional safety factor to API value
-            api_available_safe = available_balance * 0.7  # Use only 70% of API available balance
+            # Use the minimum - be very conservative
             real_available_margin = min(api_available_safe, calculated_available)
             
             logger.info(
                 f"[{instrument}] 💰 Margin info: "
                 f"Total balance: {total_balance:.2f} руб, "
                 f"API available balance: {available_balance:.2f} руб, "
-                f"API available (70%): {api_available_safe:.2f} руб, "
+                f"API available (50%): {api_available_safe:.2f} руб, "
                 f"Margin used by other positions: {total_margin_used:.2f} руб, "
                 f"Calculated available: {calculated_available:.2f} руб, "
                 f"Final available margin: {real_available_margin:.2f} руб"
@@ -740,26 +741,42 @@ class TradingLoop:
                         f"API available: {available_balance:.2f} руб, "
                         f"Margin used: {total_margin_used:.2f} руб"
                     )
-                    # Try with fewer lots - reduce very aggressively (50% reduction)
-                    if lots > 1:
-                        # Reduce by 50% or at least 2 lots, whichever is more
-                        reduction = max(2, int(lots * 0.5))
-                        reduced_lots = max(1, lots - reduction)
+                    # Try with fewer lots - reduce very aggressively
+                    # Try multiple attempts with decreasing lot sizes
+                    max_attempts = 5
+                    attempt = 0
+                    success = False
+                    
+                    while attempt < max_attempts and lots > 0 and not success:
+                        attempt += 1
+                        
+                        if attempt == 1:
+                            # First attempt: reduce by 75%
+                            reduced_lots = max(1, int(lots * 0.25))
+                        elif attempt == 2:
+                            # Second attempt: reduce to 10% of original
+                            reduced_lots = max(1, int(lots * 0.1))
+                        elif attempt == 3:
+                            # Third attempt: calculate based on available margin with 30% buffer
+                            max_lots_by_margin = int((balance * 0.7) / margin_per_lot)
+                            reduced_lots = max(1, min(max_lots_by_margin, lots // 4))
+                        elif attempt == 4:
+                            # Fourth attempt: try just 1 lot
+                            reduced_lots = 1
+                        else:
+                            # Last attempt: calculate absolute minimum
+                            max_lots_by_margin = int((balance * 0.5) / margin_per_lot)
+                            reduced_lots = max(1, max_lots_by_margin)
+                        
+                        if reduced_lots <= 0:
+                            break
+                        
                         logger.info(
-                            f"[{instrument}] 🔄 Retrying with reduced lots: {reduced_lots} "
-                            f"(reduced by {reduction} from {lots}, 50% reduction)"
+                            f"[{instrument}] 🔄 Attempt {attempt}/{max_attempts}: "
+                            f"Trying with {reduced_lots} lots "
+                            f"(reduced from {lots})"
                         )
                         
-                        # If still fails, try with even fewer lots (calculate based on available margin)
-                        if reduced_lots > 1:
-                            # Calculate max lots based on available margin with 20% buffer
-                            max_lots_by_margin = int((balance * 0.8) / margin_per_lot)
-                            if max_lots_by_margin < reduced_lots:
-                                reduced_lots = max(1, max_lots_by_margin)
-                                logger.info(
-                                    f"[{instrument}] 🔄 Further reducing to {reduced_lots} lots "
-                                    f"based on available margin calculation"
-                                )
                         resp2 = await asyncio.to_thread(
                             self.tinkoff.place_order,
                             figi=figi,
@@ -767,8 +784,10 @@ class TradingLoop:
                             direction=direction,
                             order_type="Market"
                         )
+                        
                         if resp2 and resp2.get("retCode") == 0:
                             logger.info(f"[{instrument}] ✅ Order placed with reduced lots: {reduced_lots}")
+                            success = True
                             # Record trade with reduced lots
                             trade = TradeRecord(
                                 instrument=instrument,
@@ -790,9 +809,20 @@ class TradingLoop:
                                     f"SL: {signal.stop_loss}"
                                 )
                         else:
-                            logger.error(f"[{instrument}] ❌ Retry also failed: {resp2}")
-                    else:
-                        logger.error(f"[{instrument}] ❌ Cannot reduce lots further (already at 1)")
+                            error_msg2 = resp2.get("retMsg", "Unknown error") if resp2 else "No response"
+                            if "Not enough assets" in str(error_msg2) or "30042" in str(error_msg2):
+                                logger.warning(
+                                    f"[{instrument}] ⚠️ Attempt {attempt} failed: "
+                                    f"Still insufficient margin for {reduced_lots} lots"
+                                )
+                            else:
+                                logger.error(f"[{instrument}] ❌ Attempt {attempt} failed: {error_msg2}")
+                    
+                    if not success:
+                        logger.error(
+                            f"[{instrument}] ❌ All {max_attempts} retry attempts failed. "
+                            f"Cannot open position with available margin."
+                        )
                 
                 if self.tg_bot:
                     await self.tg_bot.send_message(
