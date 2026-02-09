@@ -199,23 +199,38 @@ class TradingLoop:
             instrument_info = await asyncio.to_thread(self.storage.get_instrument_by_ticker, instrument)
             
             if not instrument_info:
-                # Try to find instrument via API
-                instrument_data = await asyncio.to_thread(
-                    self.tinkoff.find_instrument,
-                    instrument,
-                    instrument_type="futures"
-                )
-                if instrument_data:
-                    await asyncio.to_thread(
-                        self.storage.save_instrument,
-                        figi=instrument_data["figi"],
-                        ticker=instrument,
-                        name=instrument_data["name"],
-                        instrument_type=instrument_data["instrument_type"]
+                # Try to find instrument via API (с таймаутом 30 секунд)
+                logger.info(f"[{instrument}] Instrument not in storage, searching via API...")
+                try:
+                    instrument_data = await asyncio.wait_for(
+                        asyncio.to_thread(
+                            self.tinkoff.find_instrument,
+                            instrument,
+                            instrument_type="futures"
+                        ),
+                        timeout=30.0
                     )
-                    instrument_info = instrument_data
-                else:
-                    logger.warning(f"[{instrument}] Instrument not found")
+                    if instrument_data:
+                        logger.info(f"[{instrument}] Found via API, saving to storage...")
+                        await asyncio.wait_for(
+                            asyncio.to_thread(
+                                self.storage.save_instrument,
+                                figi=instrument_data["figi"],
+                                ticker=instrument,
+                                name=instrument_data["name"],
+                                instrument_type=instrument_data["instrument_type"]
+                            ),
+                            timeout=10.0
+                        )
+                        instrument_info = instrument_data
+                    else:
+                        logger.warning(f"[{instrument}] Instrument not found via API")
+                        return
+                except asyncio.TimeoutError:
+                    logger.error(f"[{instrument}] Timeout finding instrument via API (30s exceeded)")
+                    return
+                except Exception as e:
+                    logger.error(f"[{instrument}] Error finding instrument via API: {e}", exc_info=True)
                     return
             
             # Extract FIGI

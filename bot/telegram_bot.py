@@ -382,9 +382,30 @@ class TelegramBot:
                 await self.show_instruments_settings(query)
             elif query.data.startswith("toggle_"):
                 ticker = query.data.replace("toggle_", "")
-                res = self.state.toggle_instrument(ticker) if hasattr(self.state, 'toggle_instrument') else None
+                logger.info(f"Toggling instrument {ticker}...")
+                try:
+                    # Выполняем toggle с таймаутом (5 секунд должно быть достаточно для простой операции)
+                    res = await asyncio.wait_for(
+                        asyncio.to_thread(
+                            self.state.toggle_instrument if hasattr(self.state, 'toggle_instrument') else lambda x: None,
+                            ticker
+                        ),
+                        timeout=5.0
+                    )
+                    logger.info(f"Toggle instrument {ticker} completed: {res}")
+                except asyncio.TimeoutError:
+                    logger.error(f"Timeout toggling instrument {ticker} (5s exceeded)")
+                    await query.answer("❌ Таймаут при переключении инструмента. Попробуйте еще раз.", show_alert=True)
+                    return
+                except Exception as e:
+                    logger.error(f"Error toggling instrument {ticker}: {e}", exc_info=True)
+                    await query.answer(f"❌ Ошибка при переключении: {str(e)[:100]}", show_alert=True)
+                    return
+                
                 if res is None:
                     await query.answer("⚠️ Достигнут лимит в 5 инструментов!", show_alert=True)
+                
+                logger.info(f"Showing instruments settings after toggle {ticker}...")
                 await self.show_instruments_settings(query)
             elif query.data == "add_ticker":
                 user_id = query.from_user.id
@@ -489,11 +510,14 @@ class TelegramBot:
 
     async def show_instruments_settings(self, query):
         """Показывает настройки инструментов."""
-        # Получаем все известные инструменты
-        all_possible = list(set(self.state.known_instruments + self.state.active_instruments))
-        all_possible = sorted(all_possible)
-        
-        keyboard = []
+        try:
+            logger.debug("show_instruments_settings: Starting...")
+            # Получаем все известные инструменты
+            all_possible = list(set(self.state.known_instruments + self.state.active_instruments))
+            all_possible = sorted(all_possible)
+            logger.debug(f"show_instruments_settings: Found {len(all_possible)} instruments")
+            
+            keyboard = []
         for ticker in all_possible:
             status = "✅" if ticker in self.state.active_instruments else "❌"
             button_text = f"{status} {ticker}"
@@ -520,11 +544,19 @@ class TelegramBot:
                         callback_data=f"remove_cooldown_{ticker}"
                     )])
         
-        keyboard.append([InlineKeyboardButton("➕ Добавить новый инструмент", callback_data="add_ticker")])
-        keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="status_info")])
-        keyboard.append([InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")])
-        
-        await self.safe_edit_message(query, "⚙️ Настройка активных инструментов (макс 5):", reply_markup=InlineKeyboardMarkup(keyboard))
+            keyboard.append([InlineKeyboardButton("➕ Добавить новый инструмент", callback_data="add_ticker")])
+            keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="status_info")])
+            keyboard.append([InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")])
+            
+            logger.debug(f"show_instruments_settings: Sending message with {len(keyboard)} buttons")
+            await self.safe_edit_message(query, "⚙️ Настройка активных инструментов (макс 5):", reply_markup=InlineKeyboardMarkup(keyboard))
+            logger.debug("show_instruments_settings: Completed successfully")
+        except Exception as e:
+            logger.error(f"Error in show_instruments_settings: {e}", exc_info=True)
+            try:
+                await query.answer("❌ Ошибка при отображении настроек инструментов", show_alert=True)
+            except:
+                pass
 
     async def handle_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle text messages."""
