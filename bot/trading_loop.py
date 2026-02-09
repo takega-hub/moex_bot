@@ -564,20 +564,29 @@ class TradingLoop:
             except Exception as e:
                 logger.warning(f"[{instrument}] Error calculating total margin used: {e}")
             
-            # Calculate real available margin = total balance - margin used by other positions
-            # Use total balance (walletBalance) as base, not availableBalance
-            real_available_margin = total_balance - total_margin_used
-            if real_available_margin < 0:
-                real_available_margin = 0.0
+            # Use availableBalance from API directly - exchange knows best what's available
+            # But also calculate our own estimate for comparison
+            calculated_available = total_balance - total_margin_used
+            if calculated_available < 0:
+                calculated_available = 0.0
+            
+            # Use the minimum of API availableBalance and our calculated value
+            # This is more conservative and accounts for exchange's internal calculations
+            # Also apply additional safety factor to API value
+            api_available_safe = available_balance * 0.7  # Use only 70% of API available balance
+            real_available_margin = min(api_available_safe, calculated_available)
             
             logger.info(
                 f"[{instrument}] 💰 Margin info: "
                 f"Total balance: {total_balance:.2f} руб, "
+                f"API available balance: {available_balance:.2f} руб, "
+                f"API available (70%): {api_available_safe:.2f} руб, "
                 f"Margin used by other positions: {total_margin_used:.2f} руб, "
-                f"Available margin: {real_available_margin:.2f} руб"
+                f"Calculated available: {calculated_available:.2f} руб, "
+                f"Final available margin: {real_available_margin:.2f} руб"
             )
             
-            # Use real available margin instead of wallet available balance
+            # Use real available margin
             balance = real_available_margin
             
             if balance <= 0:
@@ -728,17 +737,29 @@ class TradingLoop:
                         f"Required: {margin_per_lot * lots:.2f} руб, "
                         f"Lots requested: {lots}, "
                         f"Total balance: {total_balance:.2f} руб, "
+                        f"API available: {available_balance:.2f} руб, "
                         f"Margin used: {total_margin_used:.2f} руб"
                     )
-                    # Try with fewer lots - reduce more aggressively
+                    # Try with fewer lots - reduce very aggressively (50% reduction)
                     if lots > 1:
-                        # Reduce by 20% or at least 1 lot, whichever is more
-                        reduction = max(1, int(lots * 0.2))
+                        # Reduce by 50% or at least 2 lots, whichever is more
+                        reduction = max(2, int(lots * 0.5))
                         reduced_lots = max(1, lots - reduction)
                         logger.info(
                             f"[{instrument}] 🔄 Retrying with reduced lots: {reduced_lots} "
-                            f"(reduced by {reduction} from {lots})"
+                            f"(reduced by {reduction} from {lots}, 50% reduction)"
                         )
+                        
+                        # If still fails, try with even fewer lots (calculate based on available margin)
+                        if reduced_lots > 1:
+                            # Calculate max lots based on available margin with 20% buffer
+                            max_lots_by_margin = int((balance * 0.8) / margin_per_lot)
+                            if max_lots_by_margin < reduced_lots:
+                                reduced_lots = max(1, max_lots_by_margin)
+                                logger.info(
+                                    f"[{instrument}] 🔄 Further reducing to {reduced_lots} lots "
+                                    f"based on available margin calculation"
+                                )
                         resp2 = await asyncio.to_thread(
                             self.tinkoff.place_order,
                             figi=figi,
