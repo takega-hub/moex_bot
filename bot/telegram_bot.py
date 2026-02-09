@@ -372,6 +372,10 @@ class TelegramBot:
                 await self.show_instruments_settings(query)
             elif query.data == "add_ticker":
                 user_id = query.from_user.id
+                # Очищаем другие состояния ожидания, чтобы избежать конфликтов
+                self.waiting_for_risk_setting.pop(user_id, None)
+                self.waiting_for_ml_setting.pop(user_id, None)
+                self.waiting_for_strategy_setting.pop(user_id, None)
                 self.waiting_for_ticker[user_id] = True
                 await query.edit_message_text(
                     "➕ ДОБАВЛЕНИЕ НОВОГО ИНСТРУМЕНТА\n\n"
@@ -514,25 +518,7 @@ class TelegramBot:
         user_id = update.effective_user.id
         text = update.message.text.strip()
         
-        # Проверяем, ждем ли мы ввод настройки риска
-        if user_id in self.waiting_for_risk_setting:
-            setting_name = self.waiting_for_risk_setting.pop(user_id)
-            await self.process_risk_setting_input(update, setting_name, text)
-            return
-        
-        # Проверяем, ждем ли мы ввод ML настройки
-        if user_id in self.waiting_for_ml_setting:
-            setting_name = self.waiting_for_ml_setting.pop(user_id)
-            await self.process_ml_setting_input(update, setting_name, text)
-            return
-        
-        # Проверяем, ждем ли мы ввод настройки стратегии
-        if user_id in self.waiting_for_strategy_setting:
-            setting_name = self.waiting_for_strategy_setting.pop(user_id)
-            await self.process_strategy_setting_input(update, setting_name, text)
-            return
-        
-        # Проверяем, ждем ли мы ввод тикера
+        # Проверяем, ждем ли мы ввод тикера (проверяем первым, так как это специфичный ввод)
         if self.waiting_for_ticker.get(user_id, False):
             self.waiting_for_ticker.pop(user_id, None)
             
@@ -636,6 +622,24 @@ class TelegramBot:
                     f"❌ Ошибка при добавлении инструмента {ticker}:\n{str(e)}",
                     reply_markup=self.get_main_keyboard()
                 )
+            return
+        
+        # Проверяем, ждем ли мы ввод настройки риска
+        if user_id in self.waiting_for_risk_setting:
+            setting_name = self.waiting_for_risk_setting.pop(user_id)
+            await self.process_risk_setting_input(update, setting_name, text)
+            return
+        
+        # Проверяем, ждем ли мы ввод ML настройки
+        if user_id in self.waiting_for_ml_setting:
+            setting_name = self.waiting_for_ml_setting.pop(user_id)
+            await self.process_ml_setting_input(update, setting_name, text)
+            return
+        
+        # Проверяем, ждем ли мы ввод настройки стратегии
+        if user_id in self.waiting_for_strategy_setting:
+            setting_name = self.waiting_for_strategy_setting.pop(user_id)
+            await self.process_strategy_setting_input(update, setting_name, text)
             return
 
     async def show_history_menu(self, query):
