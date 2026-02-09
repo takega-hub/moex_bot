@@ -597,24 +597,25 @@ class TelegramBot:
                         return
                 
                 # Проверяем, есть ли модели
-                has_models = bool(self.model_manager.find_models_for_instrument(ticker))
+                existing_models = self.model_manager.find_models_for_instrument(ticker)
+                has_models = bool(existing_models)
                 
-                if has_models:
-                    await update.message.reply_text(
-                        f"✅ Инструмент {ticker} включен.\n"
-                        "Модели уже существуют — обучение не требуется.",
-                        reply_markup=self.get_main_keyboard()
-                    )
-                else:
-                    await update.message.reply_text(
-                        f"✅ Инструмент {ticker} добавлен!\n\n"
-                        "🔄 Автоматически запущено обучение моделей...\n"
-                        "Вы получите уведомление по завершении.",
-                        reply_markup=self.get_main_keyboard()
-                    )
-                    # Автоматически запускаем обучение моделей
-                    user_id = update.message.from_user.id
-                    asyncio.create_task(self.retrain_models_async(ticker, user_id))
+                logger.info(f"Adding instrument {ticker}: has_models={has_models}, models_count={len(existing_models)}")
+                
+                # Всегда запускаем обучение при добавлении нового инструмента
+                # чтобы обновить модели на актуальных данных
+                await update.message.reply_text(
+                    f"✅ Инструмент {ticker} добавлен!\n\n"
+                    "🔄 Автоматически запущено обучение моделей...\n"
+                    "Вы получите уведомление по завершении.",
+                    reply_markup=self.get_main_keyboard()
+                )
+                
+                # Автоматически запускаем обучение моделей
+                user_id = update.message.from_user.id
+                logger.info(f"Starting model training for {ticker}, user_id={user_id}")
+                training_task = asyncio.create_task(self.retrain_models_async(ticker, user_id))
+                logger.info(f"Model training task created for {ticker}: {training_task}")
                 
             except Exception as e:
                 logger.error(f"Error validating/adding ticker {ticker}: {e}")
@@ -1550,6 +1551,8 @@ class TelegramBot:
         import subprocess
         from pathlib import Path
         
+        logger.info(f"[retrain_models_async] Starting training for {ticker}, user_id={user_id}")
+        
         try:
             await self.send_notification(
                 f"🎓 Начато обучение всех моделей для {ticker}...\n"
@@ -1562,7 +1565,9 @@ class TelegramBot:
             script_path = Path("train_models.py")
             
             if not script_path.exists():
-                await self.send_notification(f"❌ Скрипт обучения не найден: {script_path}", user_id)
+                error_msg = f"❌ Скрипт обучения не найден: {script_path}"
+                logger.error(f"[retrain_models_async] {error_msg}")
+                await self.send_notification(error_msg, user_id)
                 return
             
             # Определяем параметры MTF из настроек
@@ -1575,6 +1580,8 @@ class TelegramBot:
             else:
                 cmd_args.append("--no-mtf")
             
+            logger.info(f"[retrain_models_async] Running command: {' '.join(cmd_args)}")
+            
             # Запускаем обучение в отдельном процессе
             process = await asyncio.create_subprocess_exec(
                 *cmd_args,
@@ -1582,6 +1589,8 @@ class TelegramBot:
                 stderr=asyncio.subprocess.PIPE,
                 cwd=str(script_path.parent)
             )
+            
+            logger.info(f"[retrain_models_async] Training process started for {ticker}, PID={process.pid}")
             
             # Отслеживаем вывод
             trained_models = []
@@ -1632,7 +1641,8 @@ class TelegramBot:
                 )
                 
         except Exception as e:
-            logger.error(f"Error retraining models for {ticker}: {e}", exc_info=True)
-            await self.send_notification(f"❌ Ошибка при обучении моделей для {ticker}: {str(e)}", user_id)
-        except Exception as e:
-            logger.error(f"Error sending Telegram message: {e}")
+            logger.error(f"[retrain_models_async] Error retraining models for {ticker}: {e}", exc_info=True)
+            try:
+                await self.send_notification(f"❌ Ошибка при обучении моделей для {ticker}: {str(e)}", user_id)
+            except Exception as send_error:
+                logger.error(f"[retrain_models_async] Error sending Telegram message: {send_error}")
