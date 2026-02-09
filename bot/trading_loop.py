@@ -413,8 +413,19 @@ class TradingLoop:
             if lot_size <= 0:
                 lot_size = 1.0
             
-            # Get balance and available funds
-            balance_info = await asyncio.to_thread(self.tinkoff.get_wallet_balance)
+            # Get balance and available funds (с таймаутом 30 секунд)
+            try:
+                balance_info = await asyncio.wait_for(
+                    asyncio.to_thread(self.tinkoff.get_wallet_balance),
+                    timeout=30.0
+                )
+            except asyncio.TimeoutError:
+                logger.error(f"[{instrument}] Timeout getting balance (30s exceeded)")
+                return
+            except Exception as e:
+                logger.error(f"[{instrument}] Error getting balance: {e}")
+                return
+            
             balance = 0.0
             available_balance = 0.0
             

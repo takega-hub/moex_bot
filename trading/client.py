@@ -393,14 +393,30 @@ class TinkoffClient:
     
     def get_wallet_balance(self) -> Dict[str, Any]:
         """Get wallet balance and available funds."""
+        import signal
+        
         try:
             with self._get_client() as client:
-                accounts = client.users.get_accounts()
+                # Добавляем таймаут для вызова get_accounts
+                logger.debug("[get_wallet_balance] Calling get_accounts()...")
+                try:
+                    accounts = client.users.get_accounts()
+                    logger.debug(f"[get_wallet_balance] get_accounts() completed, found {len(accounts.accounts) if accounts.accounts else 0} accounts")
+                except Exception as e:
+                    logger.error(f"[get_wallet_balance] Error calling get_accounts(): {e}", exc_info=True)
+                    return {"retCode": -1, "retMsg": f"Error getting accounts: {str(e)}", "result": {"list": []}}
+                
                 if not accounts.accounts:
                     return {"retCode": -1, "retMsg": "No accounts found", "result": {"list": []}}
                 
                 account_id = accounts.accounts[0].id
-                portfolio = client.operations.get_portfolio(account_id=account_id)
+                logger.debug(f"[get_wallet_balance] Calling get_portfolio() for account_id={account_id}...")
+                try:
+                    portfolio = client.operations.get_portfolio(account_id=account_id)
+                    logger.debug("[get_wallet_balance] get_portfolio() completed")
+                except Exception as e:
+                    logger.error(f"[get_wallet_balance] Error calling get_portfolio(): {e}", exc_info=True)
+                    return {"retCode": -1, "retMsg": f"Error getting portfolio: {str(e)}", "result": {"list": []}}
                 
                 # Get total amount
                 total_amount = float(portfolio.total_amount_portfolio.units) + float(portfolio.total_amount_portfolio.nano) / 1e9

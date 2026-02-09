@@ -187,7 +187,11 @@ class TelegramBot:
         
         if self.tinkoff:
             try:
-                balance_info = await asyncio.to_thread(self.tinkoff.get_wallet_balance)
+                # Добавляем таймаут для получения баланса (30 секунд)
+                balance_info = await asyncio.wait_for(
+                    asyncio.to_thread(self.tinkoff.get_wallet_balance),
+                    timeout=30.0
+                )
                 if balance_info.get("retCode") == 0:
                     result = balance_info.get("result", {})
                     list_data = result.get("list", [])
@@ -196,6 +200,8 @@ class TelegramBot:
                         rub_coin = next((c for c in wallet if c.get("coin") == "RUB"), None)
                         if rub_coin:
                             wallet_balance = safe_float(rub_coin.get("walletBalance"), 0)
+            except asyncio.TimeoutError:
+                logger.error("Timeout getting balance in show_status (30s exceeded)")
             except Exception as e:
                 logger.error(f"Error getting balance: {e}")
             
@@ -1379,7 +1385,11 @@ class TelegramBot:
         wallet_balance = 0.0
         if self.tinkoff:
             try:
-                balance_info = await asyncio.to_thread(self.tinkoff.get_wallet_balance)
+                # Добавляем таймаут для получения баланса (30 секунд)
+                balance_info = await asyncio.wait_for(
+                    asyncio.to_thread(self.tinkoff.get_wallet_balance),
+                    timeout=30.0
+                )
                 if balance_info.get("retCode") == 0:
                     result = balance_info.get("result", {})
                     list_data = result.get("list", [])
@@ -1388,6 +1398,8 @@ class TelegramBot:
                         rub_coin = next((c for c in wallet if c.get("coin") == "RUB"), None)
                         if rub_coin:
                             wallet_balance = safe_float(rub_coin.get("walletBalance"), 0)
+            except asyncio.TimeoutError:
+                logger.error("Timeout getting balance in dashboard (30s exceeded)")
             except Exception as e:
                 logger.error(f"Error getting balance: {e}")
         
