@@ -687,20 +687,25 @@ class TelegramBot:
                 
                 logger.info(f"Adding instrument {ticker}: has_models={has_models}, models_count={len(existing_models)}")
                 
-                # Всегда запускаем обучение при добавлении нового инструмента
-                # чтобы обновить модели на актуальных данных
-                await update.message.reply_text(
-                    f"✅ Инструмент {ticker} добавлен!\n\n"
-                    "🔄 Автоматически запущено обучение моделей...\n"
-                    "Вы получите уведомление по завершении.",
-                    reply_markup=self.get_main_keyboard()
-                )
-                
-                # Автоматически запускаем обучение моделей
-                user_id = update.message.from_user.id
-                logger.info(f"Starting model training for {ticker}, user_id={user_id}")
-                training_task = asyncio.create_task(self.retrain_models_async(ticker, user_id))
-                logger.info(f"Model training task created for {ticker}: {training_task}")
+                if has_models:
+                    await update.message.reply_text(
+                        f"✅ Инструмент {ticker} включен.\n"
+                        "Модели уже существуют — обучение не требуется.",
+                        reply_markup=self.get_main_keyboard()
+                    )
+                else:
+                    await update.message.reply_text(
+                        f"✅ Инструмент {ticker} добавлен!\n\n"
+                        "🔄 Автоматически запущено обучение моделей...\n"
+                        "Вы получите уведомление по завершении.",
+                        reply_markup=self.get_main_keyboard()
+                    )
+                    
+                    # Автоматически запускаем обучение моделей только если их нет
+                    user_id = update.message.from_user.id
+                    logger.info(f"Starting model training for {ticker}, user_id={user_id}")
+                    training_task = asyncio.create_task(self.retrain_models_async(ticker, user_id))
+                    logger.info(f"Model training task created for {ticker}: {training_task}")
                 
             except Exception as e:
                 logger.error(f"Error validating/adding ticker {ticker}: {e}")

@@ -2,3 +2,4 @@ figi,ticker,name,instrument_type,updated_at
 FUTVTBR03260,VBH6,VTBR-3.26 ВТБ,futures,2026-02-09 15:07:50.830796
 FUTSBRF03260,SRH6,SBRF-3.26 Сбер Банк (обыкновенные),futures,2026-02-09 15:09:07.505508
 FUTGLDRUBF00,GLDRUBF,GLDRUBF Золото (rub),futures,2026-02-09 15:10:22.868389
+FUTSILV03260,SVH6,SILV-3.26 Серебро,futures,2026-02-09T21:49:16.169824

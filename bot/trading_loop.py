@@ -492,7 +492,7 @@ class TradingLoop:
                 logger.error(f"[{instrument}] Error getting balance: {e}")
                 return
             
-            balance = 0.0
+            total_balance = 0.0
             available_balance = 0.0
             
             if balance_info and balance_info.get("retCode") == 0:
@@ -504,15 +504,82 @@ class TradingLoop:
                     if coin_list:
                         rub_coin = next((c for c in coin_list if c.get("coin") == "RUB"), None)
                         if rub_coin:
-                            balance = float(rub_coin.get("walletBalance", 0))
+                            total_balance = float(rub_coin.get("walletBalance", 0))
                             # Use available balance if available, otherwise use total balance
-                            available_balance = float(rub_coin.get("availableBalance", balance))
+                            available_balance = float(rub_coin.get("availableBalance", total_balance))
             
-            # Use available balance for margin calculations (excludes locked margin)
-            balance = available_balance if available_balance > 0 else balance
+            # Calculate total margin used by all open positions
+            total_margin_used = 0.0
+            try:
+                for ticker in self.state.active_instruments:
+                    # Skip current instrument to avoid double counting
+                    if ticker == instrument:
+                        continue
+                    
+                    instrument_info = self.storage.get_instrument_by_ticker(ticker)
+                    if not instrument_info:
+                        continue
+                    pos_figi = instrument_info["figi"]
+                    
+                    try:
+                        pos_info = await asyncio.wait_for(
+                            asyncio.to_thread(self.tinkoff.get_position_info, figi=pos_figi),
+                            timeout=10.0
+                        )
+                        if pos_info and pos_info.get("retCode") == 0:
+                            positions = pos_info.get("result", {}).get("list", [])
+                            for pos in positions:
+                                quantity = abs(float(pos.get("quantity", 0)))
+                                if quantity > 0:
+                                    avg_price = float(pos.get("average_price", 0))
+                                    if avg_price > 0:
+                                        # Get lot size for this instrument
+                                        pos_lot_size = await asyncio.to_thread(
+                                            self.tinkoff.get_qty_step, pos_figi
+                                        )
+                                        if pos_lot_size <= 0:
+                                            pos_lot_size = 1.0
+                                        
+                                        # Calculate margin for this position (12% of position value)
+                                        position_value = avg_price * quantity * pos_lot_size
+                                        pos_margin = position_value * 0.12
+                                        total_margin_used += pos_margin
+                                        logger.debug(
+                                            f"[{instrument}] Position {ticker}: "
+                                            f"qty={quantity}, price={avg_price:.2f}, "
+                                            f"margin={pos_margin:.2f} руб"
+                                        )
+                    except asyncio.TimeoutError:
+                        logger.debug(f"[{instrument}] Timeout getting position info for {ticker}")
+                        continue
+                    except Exception as e:
+                        logger.debug(f"[{instrument}] Error getting position info for {ticker}: {e}")
+                        continue
+            except Exception as e:
+                logger.warning(f"[{instrument}] Error calculating total margin used: {e}")
+            
+            # Calculate real available margin = total balance - margin used by other positions
+            # Use total balance (walletBalance) as base, not availableBalance
+            real_available_margin = total_balance - total_margin_used
+            if real_available_margin < 0:
+                real_available_margin = 0.0
+            
+            logger.info(
+                f"[{instrument}] 💰 Margin info: "
+                f"Total balance: {total_balance:.2f} руб, "
+                f"Margin used by other positions: {total_margin_used:.2f} руб, "
+                f"Available margin: {real_available_margin:.2f} руб"
+            )
+            
+            # Use real available margin instead of wallet available balance
+            balance = real_available_margin
             
             if balance <= 0:
-                logger.error(f"[{instrument}] ❌ Cannot get balance")
+                logger.error(
+                    f"[{instrument}] ❌ No available margin. "
+                    f"Total balance: {total_balance:.2f} руб, "
+                    f"Margin used: {total_margin_used:.2f} руб"
+                )
                 return
             
             # Calculate position size
@@ -559,7 +626,8 @@ class TradingLoop:
                     f"[{instrument}] ⚠️ Insufficient margin for position. "
                     f"Available: {available_margin:.2f} руб, "
                     f"Required for 1 lot: {margin_per_lot:.2f} руб, "
-                    f"Balance: {balance:.2f} руб. "
+                    f"Total balance: {total_balance:.2f} руб, "
+                    f"Margin used: {total_margin_used:.2f} руб. "
                     f"Increase base_order_usd (current: {fixed_margin:.2f} руб) or add funds."
                 )
                 return
@@ -634,9 +702,11 @@ class TradingLoop:
                 if "Not enough assets" in str(error_msg) or "30042" in str(error_msg):
                     logger.warning(
                         f"[{instrument}] ⚠️ Insufficient margin on exchange. "
-                        f"Available: {balance:.2f} руб, "
+                        f"Available margin: {balance:.2f} руб, "
                         f"Required: {margin_per_lot * lots:.2f} руб, "
-                        f"Lots requested: {lots}"
+                        f"Lots requested: {lots}, "
+                        f"Total balance: {total_balance:.2f} руб, "
+                        f"Margin used: {total_margin_used:.2f} руб"
                     )
                     # Try with fewer lots
                     if lots > 1:
