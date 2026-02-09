@@ -1479,6 +1479,8 @@ class TelegramBot:
                     chat_id=self.settings.allowed_user_id,
                     text=text
                 )
+        except Exception as e:
+            logger.error(f"Error sending message: {e}")
     
     async def send_notification(self, text: str, user_id: Optional[int] = None):
         """Send notification to user."""
