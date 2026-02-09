@@ -519,31 +519,31 @@ class TelegramBot:
             
             keyboard = []
             for ticker in all_possible:
-            status = "✅" if ticker in self.state.active_instruments else "❌"
-            button_text = f"{status} {ticker}"
+                status = "✅" if ticker in self.state.active_instruments else "❌"
+                button_text = f"{status} {ticker}"
+                
+                # Проверяем cooldown
+                if hasattr(self.state, 'get_cooldown_info'):
+                    cooldown_info = self.state.get_cooldown_info(ticker)
+                    if cooldown_info and cooldown_info.get("active"):
+                        hours_left = cooldown_info.get("hours_left", 0)
+                        if hours_left < 1:
+                            minutes_left = int(hours_left * 60)
+                            button_text += f" ❄️({minutes_left}м)"
+                        else:
+                            button_text += f" ❄️({hours_left:.1f}ч)"
+                
+                keyboard.append([InlineKeyboardButton(button_text, callback_data=f"toggle_{ticker}")])
+                
+                # Кнопка снятия cooldown
+                if hasattr(self.state, 'get_cooldown_info'):
+                    cooldown_info = self.state.get_cooldown_info(ticker)
+                    if cooldown_info and cooldown_info.get("active"):
+                        keyboard.append([InlineKeyboardButton(
+                            f"🔥 Снять разморозку {ticker}",
+                            callback_data=f"remove_cooldown_{ticker}"
+                        )])
             
-            # Проверяем cooldown
-            if hasattr(self.state, 'get_cooldown_info'):
-                cooldown_info = self.state.get_cooldown_info(ticker)
-                if cooldown_info and cooldown_info.get("active"):
-                    hours_left = cooldown_info.get("hours_left", 0)
-                    if hours_left < 1:
-                        minutes_left = int(hours_left * 60)
-                        button_text += f" ❄️({minutes_left}м)"
-                    else:
-                        button_text += f" ❄️({hours_left:.1f}ч)"
-            
-            keyboard.append([InlineKeyboardButton(button_text, callback_data=f"toggle_{ticker}")])
-            
-            # Кнопка снятия cooldown
-            if hasattr(self.state, 'get_cooldown_info'):
-                cooldown_info = self.state.get_cooldown_info(ticker)
-                if cooldown_info and cooldown_info.get("active"):
-                    keyboard.append([InlineKeyboardButton(
-                        f"🔥 Снять разморозку {ticker}",
-                        callback_data=f"remove_cooldown_{ticker}"
-                    )])
-        
             keyboard.append([InlineKeyboardButton("➕ Добавить новый инструмент", callback_data="add_ticker")])
             keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="status_info")])
             keyboard.append([InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")])
