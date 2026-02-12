@@ -1157,8 +1157,7 @@ class TelegramBot:
                     logger.info(f"Cleared existing strategy for {ticker} to apply new MTF models")
                 
                 # Принудительно перезагружаем стратегию сразу
-                from pathlib import Path
-                models_dir = Path("ml_models")
+                # Path уже импортирован в начале функции
                 model_1h_path = models_dir / f"{mtf_models['model_1h']}.pkl"
                 model_15m_path = models_dir / f"{mtf_models['model_15m']}.pkl"
                 
