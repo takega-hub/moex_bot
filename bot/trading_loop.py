@@ -565,30 +565,22 @@ class TradingLoop:
                 logger.warning(f"[{instrument}] Error calculating total margin used: {e}")
             
             # Use availableBalance from API directly - exchange knows best what's available
-            # Apply very conservative safety factor (50%) to account for exchange's internal calculations
+            # Don't try to calculate used margin ourselves - exchange already accounts for it
+            # Apply conservative safety factor (40%) to account for exchange's internal calculations
             # Exchange may have additional requirements (variation margin, fees, etc.)
-            api_available_safe = available_balance * 0.5  # Use only 50% of API available balance
+            api_available_safe = available_balance * 0.4  # Use only 40% of API available balance
             
-            # Also calculate our own estimate for comparison
-            calculated_available = total_balance - total_margin_used
-            if calculated_available < 0:
-                calculated_available = 0.0
-            
-            # Use the minimum - be very conservative
-            real_available_margin = min(api_available_safe, calculated_available)
-            
+            # Log both values for comparison
             logger.info(
                 f"[{instrument}] 💰 Margin info: "
                 f"Total balance: {total_balance:.2f} руб, "
                 f"API available balance: {available_balance:.2f} руб, "
-                f"API available (50%): {api_available_safe:.2f} руб, "
-                f"Margin used by other positions: {total_margin_used:.2f} руб, "
-                f"Calculated available: {calculated_available:.2f} руб, "
-                f"Final available margin: {real_available_margin:.2f} руб"
+                f"API available (40%): {api_available_safe:.2f} руб, "
+                f"Margin used by other positions (estimated): {total_margin_used:.2f} руб"
             )
             
-            # Use real available margin
-            balance = real_available_margin
+            # Use API available balance with safety factor - trust the exchange
+            balance = api_available_safe
             
             if balance <= 0:
                 logger.error(
@@ -600,8 +592,8 @@ class TradingLoop:
             
             # Calculate position size
             # For Tinkoff futures, margin is typically ~12% of position value
-            # Use 15% for safety margin (more conservative)
-            margin_rate = 0.15  # 15% margin requirement (conservative, actual is ~12%)
+            # Use 20% for safety margin (very conservative) - exchange may require more
+            margin_rate = 0.20  # 20% margin requirement (very conservative, actual is ~12%)
             
             if lot_size <= 0:
                 lot_size = 1.0
@@ -757,16 +749,17 @@ class TradingLoop:
                             # Second attempt: reduce to 10% of original
                             reduced_lots = max(1, int(lots * 0.1))
                         elif attempt == 3:
-                            # Third attempt: calculate based on available margin with 30% buffer
-                            max_lots_by_margin = int((balance * 0.7) / margin_per_lot)
+                            # Third attempt: calculate based on available margin with 50% buffer
+                            max_lots_by_margin = int((balance * 0.5) / margin_per_lot)
                             reduced_lots = max(1, min(max_lots_by_margin, lots // 4))
                         elif attempt == 4:
                             # Fourth attempt: try just 1 lot
                             reduced_lots = 1
                         else:
-                            # Last attempt: calculate absolute minimum
-                            max_lots_by_margin = int((balance * 0.5) / margin_per_lot)
-                            reduced_lots = max(1, max_lots_by_margin)
+                            # Last attempt: calculate absolute minimum based on available margin
+                            # Use only 30% of available margin for maximum safety
+                            max_lots_by_margin = int((balance * 0.3) / margin_per_lot)
+                            reduced_lots = max(1, min(max_lots_by_margin, 1))  # Cap at 1 lot max
                         
                         if reduced_lots <= 0:
                             break
@@ -821,7 +814,10 @@ class TradingLoop:
                     if not success:
                         logger.error(
                             f"[{instrument}] ❌ All {max_attempts} retry attempts failed. "
-                            f"Cannot open position with available margin."
+                            f"Cannot open position with available margin. "
+                            f"Even 1 lot failed with available balance: {available_balance:.2f} руб, "
+                            f"margin per lot: {margin_per_lot:.2f} руб. "
+                            f"This suggests insufficient funds or exchange requirements not met."
                         )
                 
                 if self.tg_bot:
@@ -856,38 +852,64 @@ class TradingLoop:
             if not local_pos or local_pos.status != "open":
                 return
             
-            # Get latest price
-            df = self.storage.get_candles(figi=figi, interval=self.settings.timeframe, limit=1)
-            if df.empty:
-                return
+            # Get latest price - try from position API first, then from storage
+            current_price = float(position.get("current_price", 0))
+            if current_price <= 0:
+                # Fallback to storage
+                df = self.storage.get_candles(figi=figi, interval=self.settings.timeframe, limit=1)
+                if not df.empty:
+                    current_price = float(df['close'].iloc[-1])
+                else:
+                    logger.warning(f"[{ticker}] ⚠️ Cannot get current price for position check")
+                    return
             
-            current_price = float(df['close'].iloc[-1])
+            # Log position status for debugging
+            logger.debug(
+                f"[{ticker}] 📊 Position check: "
+                f"Price={current_price:.2f}, "
+                f"Entry={local_pos.entry_price:.2f}, "
+                f"TP={local_pos.take_profit}, "
+                f"SL={local_pos.stop_loss}, "
+                f"Side={local_pos.side}, "
+                f"Qty={quantity}"
+            )
             
-            # Check TP/SL
+            # Check TP/SL - check each independently (don't require both)
             should_close = False
             exit_reason = None
             
-            if local_pos.take_profit and local_pos.stop_loss:
-                if local_pos.side == "Buy":
-                    # LONG position
-                    if current_price >= local_pos.take_profit:
-                        should_close = True
-                        exit_reason = "TP"
-                        logger.info(f"[{ticker}] ✅ TP hit: {current_price:.2f} >= {local_pos.take_profit:.2f}")
-                    elif current_price <= local_pos.stop_loss:
-                        should_close = True
-                        exit_reason = "SL"
-                        logger.info(f"[{ticker}] ❌ SL hit: {current_price:.2f} <= {local_pos.stop_loss:.2f}")
-                else:
-                    # SHORT position
-                    if current_price <= local_pos.take_profit:
-                        should_close = True
-                        exit_reason = "TP"
-                        logger.info(f"[{ticker}] ✅ TP hit: {current_price:.2f} <= {local_pos.take_profit:.2f}")
-                    elif current_price >= local_pos.stop_loss:
-                        should_close = True
-                        exit_reason = "SL"
-                        logger.info(f"[{ticker}] ❌ SL hit: {current_price:.2f} >= {local_pos.stop_loss:.2f}")
+            if local_pos.side == "Buy":
+                # LONG position
+                if local_pos.take_profit and current_price >= local_pos.take_profit:
+                    should_close = True
+                    exit_reason = "TP"
+                    logger.info(f"[{ticker}] ✅ TP hit: {current_price:.2f} >= {local_pos.take_profit:.2f}")
+                elif local_pos.stop_loss and current_price <= local_pos.stop_loss:
+                    should_close = True
+                    exit_reason = "SL"
+                    logger.info(f"[{ticker}] ❌ SL hit: {current_price:.2f} <= {local_pos.stop_loss:.2f}")
+            else:
+                # SHORT position
+                if local_pos.take_profit and current_price <= local_pos.take_profit:
+                    should_close = True
+                    exit_reason = "TP"
+                    logger.info(f"[{ticker}] ✅ TP hit: {current_price:.2f} <= {local_pos.take_profit:.2f}")
+                elif local_pos.stop_loss and current_price >= local_pos.stop_loss:
+                    should_close = True
+                    exit_reason = "SL"
+                    logger.info(f"[{ticker}] ❌ SL hit: {current_price:.2f} >= {local_pos.stop_loss:.2f}")
+            
+            # Warn if TP/SL are missing
+            if not local_pos.take_profit and not local_pos.stop_loss:
+                logger.warning(
+                    f"[{ticker}] ⚠️ Position has no TP/SL! "
+                    f"Entry: {local_pos.entry_price:.2f}, Current: {current_price:.2f}, "
+                    f"PnL: {((current_price - local_pos.entry_price) / local_pos.entry_price * 100):+.2f}%"
+                )
+            elif not local_pos.take_profit:
+                logger.warning(f"[{ticker}] ⚠️ Position has no TP! Only SL: {local_pos.stop_loss:.2f}")
+            elif not local_pos.stop_loss:
+                logger.warning(f"[{ticker}] ⚠️ Position has no SL! Only TP: {local_pos.take_profit:.2f}")
             
             # Close position if TP/SL hit
             if should_close and exit_reason:
