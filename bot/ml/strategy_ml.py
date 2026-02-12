@@ -90,6 +90,108 @@ class MLStrategy:
             logger.error(f"Error loading model: {e}")
             raise
     
+    def predict(
+        self,
+        df: pd.DataFrame,
+        skip_feature_creation: bool = False,
+    ) -> tuple[int, float]:
+        """
+        Получить предсказание модели без генерации полного сигнала.
+        
+        Args:
+            df: DataFrame с историческими данными
+            skip_feature_creation: Пропустить создание фичей (если уже созданы)
+        
+        Returns:
+            (prediction, confidence) где:
+            - prediction: 1 (LONG), -1 (SHORT), 0 (HOLD)
+            - confidence: уверенность (0-1)
+        """
+        try:
+            if df.empty or len(df) < 60:
+                return 0, 0.0
+            
+            # Подготавливаем фичи
+            if skip_feature_creation:
+                features_df = df
+            else:
+                features_df = self.feature_engineer.prepare_features_for_prediction(df, lookback=60)
+            
+            if features_df is None or features_df.empty:
+                return 0, 0.0
+            
+            # Выравниваем фичи с ожидаемыми моделью
+            if self.feature_names:
+                missing_features = set(self.feature_names) - set(features_df.columns)
+                if missing_features:
+                    for feat in missing_features:
+                        features_df[feat] = 0.0
+                features_df = features_df[self.feature_names]
+            
+            # Масштабируем фичи если есть scaler
+            if self.scaler:
+                try:
+                    feature_array = self.scaler.transform(features_df.values)
+                except Exception as e:
+                    logger.debug(f"Error scaling features in predict: {e}")
+                    feature_array = features_df.values
+            else:
+                feature_array = features_df.values
+            
+            # Предсказание
+            try:
+                prediction = self.model.predict(feature_array)
+                probabilities = None
+                
+                if hasattr(self.model, 'predict_proba'):
+                    try:
+                        probabilities = self.model.predict_proba(feature_array)
+                    except Exception:
+                        probabilities = None
+                
+                # Получаем значение предсказания
+                if isinstance(prediction, np.ndarray):
+                    pred_value = int(prediction[-1]) if len(prediction) > 0 else 0
+                else:
+                    pred_value = int(prediction)
+                
+                # Преобразуем в формат: 1 (LONG), -1 (SHORT), 0 (HOLD)
+                if pred_value == 1:
+                    pred = 1
+                elif pred_value == -1:
+                    pred = -1
+                else:
+                    pred = 0
+                
+                # Рассчитываем уверенность
+                confidence = 0.5
+                if probabilities is not None and len(probabilities) > 0:
+                    probs = probabilities[-1]  # Берем последнее предсказание
+                    
+                    if len(probs) >= 3:  # Три класса: -1, 0, 1
+                        if pred == 1:
+                            confidence = float(probs[2])  # Вероятность LONG
+                        elif pred == -1:
+                            confidence = float(probs[0])  # Вероятность SHORT
+                        else:
+                            confidence = float(probs[1])  # Вероятность HOLD
+                    elif len(probs) == 2:  # Два класса
+                        if pred == 1:
+                            confidence = float(probs[1])
+                        else:
+                            confidence = float(probs[0])
+                
+                # Возвращаем предсказание и уверенность (порог проверяется в MTF стратегии)
+                return pred, confidence
+                
+            except Exception as e:
+                logger.error(f"Error in model prediction: {e}")
+                return 0, 0.0
+                
+        except Exception as e:
+            logger.error(f"Error in predict method: {e}")
+            return 0, 0.0
+    
     def generate_signal(
         self,
         row: pd.Series,

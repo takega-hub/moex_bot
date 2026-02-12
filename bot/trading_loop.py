@@ -3,14 +3,16 @@ import time
 import asyncio
 import logging
 import math
+import json
 import pandas as pd
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Union
 from datetime import datetime, timedelta
 
 from bot.config import AppSettings
 from bot.state import BotState, TradeRecord
 from trading.client import TinkoffClient
 from bot.ml.strategy_ml import MLStrategy
+from bot.ml.mtf_strategy import MultiTimeframeMLStrategy
 from bot.strategy import Action, Signal, Bias
 from data.collector import DataCollector
 from data.storage import DataStorage
@@ -25,7 +27,7 @@ class TradingLoop:
         self.state = state
         self.tinkoff = tinkoff
         self.tg_bot = tg_bot
-        self.strategies: Dict[str, MLStrategy] = {}
+        self.strategies: Dict[str, Union[MLStrategy, MultiTimeframeMLStrategy]] = {}
         self.last_processed_candle: Dict[str, Optional[pd.Timestamp]] = {}
         
         # Data collector for historical data
@@ -178,6 +180,10 @@ class TradingLoop:
                     # Log all found positions for debugging
                     found_tickers = []
                     skipped_tickers = []
+                    currency_positions = []
+                    unknown_positions = []
+                    
+                    logger.debug(f"📊 Found {len(positions)} total positions from exchange")
                     
                     for position in positions:
                         figi = position.get("figi")
@@ -185,12 +191,19 @@ class TradingLoop:
                         if quantity == 0:
                             continue
                         
+                        # Skip currency positions (RUB, USD, etc.) - they're not futures
+                        if figi and ("RUB" in figi or figi.startswith("RUB") or "CURRENCY" in str(figi).upper()):
+                            currency_positions.append(figi)
+                            logger.debug(f"💰 Skipping currency position: FIGI={figi}, Qty={quantity}")
+                            continue
+                        
                         # Get ticker from FIGI
                         instrument_info = self.storage.get_instrument(figi)
                         if not instrument_info:
+                            unknown_positions.append(f"{figi} (qty={quantity})")
                             logger.warning(
                                 f"⚠️ Position found with FIGI {figi} but instrument not found in storage. "
-                                f"Quantity: {quantity}"
+                                f"Quantity: {quantity}. This might be a currency or unknown instrument type."
                             )
                             continue
                         
@@ -226,12 +239,19 @@ class TradingLoop:
                                     f"Please remove an instrument manually or increase the limit."
                                 )
                     
-                    if found_tickers or skipped_tickers:
-                        logger.debug(
-                            f"📊 Position monitoring: "
-                            f"Found {len(found_tickers)} active positions: {found_tickers}, "
-                            f"Skipped {len(skipped_tickers)}: {skipped_tickers}"
+                    # Log summary
+                    if found_tickers or skipped_tickers or currency_positions or unknown_positions:
+                        logger.info(
+                            f"📊 Position monitoring summary: "
+                            f"Active positions: {found_tickers}, "
+                            f"Auto-added: {skipped_tickers}, "
+                            f"Currency (ignored): {len(currency_positions)}, "
+                            f"Unknown (ignored): {len(unknown_positions)}"
                         )
+                        if currency_positions:
+                            logger.debug(f"   Currency positions: {currency_positions}")
+                        if unknown_positions:
+                            logger.debug(f"   Unknown positions: {unknown_positions}")
                 
                 await asyncio.sleep(25)
                 
@@ -347,38 +367,96 @@ class TradingLoop:
             
             # Initialize strategy if needed
             if instrument not in self.strategies:
-                model_path = self.state.instrument_models.get(instrument)
-                if not model_path:
-                    from pathlib import Path
-                    models_dir = Path("ml_models")
-                    models = list(models_dir.glob(f"*_{instrument}_*.pkl"))
-                    if models:
-                        model_path = str(models[0])
-                        self.state.instrument_models[instrument] = model_path
+                from pathlib import Path
+                models_dir = Path("ml_models")
                 
-                if model_path:
-                    logger.info(f"[{instrument}] 🔄 Loading model: {model_path}")
-                    ml_settings = self.settings.get_ml_settings_for_instrument(instrument)
-                    try:
-                        self.strategies[instrument] = MLStrategy(
-                            model_path=model_path,
-                            confidence_threshold=ml_settings.confidence_threshold or self.settings.ml_strategy.confidence_threshold,
-                            min_signal_strength=ml_settings.min_signal_strength or self.settings.ml_strategy.min_signal_strength
+                # Проверяем, включена ли MTF стратегия
+                use_mtf = self.settings.ml_strategy.use_mtf_strategy
+                
+                if use_mtf:
+                    # Пытаемся загрузить сохраненные MTF модели из mtf_models.json
+                    mtf_models_file = Path("mtf_models.json")
+                    model_1h_path = None
+                    model_15m_path = None
+                    
+                    if mtf_models_file.exists():
+                        try:
+                            with open(mtf_models_file, 'r', encoding='utf-8') as f:
+                                mtf_data = json.load(f)
+                                mtf_models = mtf_data.get(instrument.upper(), {})
+                                if mtf_models.get("model_1h") and mtf_models.get("model_15m"):
+                                    model_1h_path = models_dir / f"{mtf_models['model_1h']}.pkl"
+                                    model_15m_path = models_dir / f"{mtf_models['model_15m']}.pkl"
+                        except Exception as e:
+                            logger.debug(f"[{instrument}] Could not load MTF models from file: {e}")
+                    
+                    # Если не нашли в файле, ищем автоматически
+                    if not model_1h_path or not model_15m_path or not model_1h_path.exists() or not model_15m_path.exists():
+                        models_1h = list(models_dir.glob(f"*_{instrument}_60_*.pkl")) + list(models_dir.glob(f"*_{instrument}_*1h*.pkl"))
+                        models_15m = list(models_dir.glob(f"*_{instrument}_15_*.pkl")) + list(models_dir.glob(f"*_{instrument}_*15m*.pkl"))
+                        
+                        if models_1h and models_15m:
+                            model_1h_path = models_1h[0]
+                            model_15m_path = models_15m[0]
+                    
+                    if model_1h_path and model_15m_path and model_1h_path.exists() and model_15m_path.exists():
+                        logger.info(f"[{instrument}] 🔄 Loading MTF strategy:")
+                        logger.info(f"  1h model: {model_1h_path.name}")
+                        logger.info(f"  15m model: {model_15m_path.name}")
+                        
+                        try:
+                            self.strategies[instrument] = MultiTimeframeMLStrategy(
+                                model_1h_path=str(model_1h_path),
+                                model_15m_path=str(model_15m_path),
+                                confidence_threshold_1h=self.settings.ml_strategy.mtf_confidence_threshold_1h,
+                                confidence_threshold_15m=self.settings.ml_strategy.mtf_confidence_threshold_15m,
+                                alignment_mode=self.settings.ml_strategy.mtf_alignment_mode,
+                                require_alignment=self.settings.ml_strategy.mtf_require_alignment,
+                            )
+                            logger.info(f"[{instrument}] ✅ MTF strategy loaded successfully")
+                        except Exception as e:
+                            logger.error(f"[{instrument}] ❌ Failed to load MTF strategy: {e}", exc_info=True)
+                            logger.warning(f"[{instrument}] Falling back to single timeframe strategy")
+                            use_mtf = False
+                    else:
+                        logger.warning(
+                            f"[{instrument}] ⚠️ MTF strategy enabled but models not found. "
+                            f"Falling back to single timeframe strategy."
                         )
-                        logger.info(
-                            f"[{instrument}] ✅ Model loaded successfully. "
-                            f"Confidence threshold: {ml_settings.confidence_threshold or self.settings.ml_strategy.confidence_threshold:.2%}, "
-                            f"Data available: {len(df)} candles"
+                        use_mtf = False
+                
+                if not use_mtf:
+                    # Используем обычную стратегию (15m)
+                    model_path = self.state.instrument_models.get(instrument)
+                    if not model_path:
+                        models = list(models_dir.glob(f"*_{instrument}_*.pkl"))
+                        if models:
+                            model_path = str(models[0])
+                            self.state.instrument_models[instrument] = model_path
+                    
+                    if model_path:
+                        logger.info(f"[{instrument}] 🔄 Loading model: {model_path}")
+                        ml_settings = self.settings.get_ml_settings_for_instrument(instrument)
+                        try:
+                            self.strategies[instrument] = MLStrategy(
+                                model_path=model_path,
+                                confidence_threshold=ml_settings.confidence_threshold or self.settings.ml_strategy.confidence_threshold,
+                                min_signal_strength=ml_settings.min_signal_strength or self.settings.ml_strategy.min_signal_strength
+                            )
+                            logger.info(
+                                f"[{instrument}] ✅ Model loaded successfully. "
+                                f"Confidence threshold: {ml_settings.confidence_threshold or self.settings.ml_strategy.confidence_threshold:.2%}, "
+                                f"Data available: {len(df)} candles"
+                            )
+                        except Exception as e:
+                            logger.error(f"[{instrument}] ❌ Failed to load model: {e}", exc_info=True)
+                            return
+                    else:
+                        logger.warning(
+                            f"[{instrument}] ⚠️ No model found. "
+                            f"Search pattern: *_{instrument}_*.pkl in ml_models/"
                         )
-                    except Exception as e:
-                        logger.error(f"[{instrument}] ❌ Failed to load model: {e}", exc_info=True)
                         return
-                else:
-                    logger.warning(
-                        f"[{instrument}] ⚠️ No model found. "
-                        f"Search pattern: *_{instrument}_*.pkl in ml_models/"
-                    )
-                    return
             
             # Generate signal
             strategy = self.strategies[instrument]
@@ -416,14 +494,42 @@ class TradingLoop:
             # Generate signal
             df_for_signal = df.iloc[:-1] if len(df) >= 2 else df
             
-            signal = await asyncio.to_thread(
-                strategy.generate_signal,
-                row=row,
-                df=df_for_signal,
-                has_position=has_pos,
-                current_price=current_price,
-                leverage=self.settings.leverage
-            )
+            # Проверяем, это MTF стратегия или обычная
+            if isinstance(strategy, MultiTimeframeMLStrategy):
+                # MTF стратегия - загружаем 1h данные если есть
+                df_1h = None
+                try:
+                    df_1h = self.storage.get_candles(
+                        figi=figi,
+                        interval="1hour",
+                        limit=1000
+                    )
+                    if not df_1h.empty and "time" in df_1h.columns:
+                        df_1h["timestamp"] = pd.to_datetime(df_1h["time"])
+                        df_1h = df_1h.set_index("timestamp")
+                except Exception as e:
+                    logger.debug(f"[{instrument}] Could not load 1h data, will aggregate from 15m: {e}")
+                    df_1h = None
+                
+                signal = await asyncio.to_thread(
+                    strategy.generate_signal,
+                    row=row,
+                    df_15m=df_for_signal,
+                    df_1h=df_1h,
+                    has_position=has_pos,
+                    current_price=current_price,
+                    leverage=self.settings.leverage
+                )
+            else:
+                # Обычная стратегия
+                signal = await asyncio.to_thread(
+                    strategy.generate_signal,
+                    row=row,
+                    df=df_for_signal,
+                    has_position=has_pos,
+                    current_price=current_price,
+                    leverage=self.settings.leverage
+                )
             
             if not signal:
                 # Log detailed reason why signal wasn't generated

@@ -40,6 +40,14 @@ class StrategyParams:
     retrain_days: int = 7
     retrain_interval_hours: int = 24
     
+    # Параметры комбинированной MTF стратегии (1h + 15m)
+    # ВАЖНО: По умолчанию False для безопасности. Включите через конфигурацию после настройки моделей.
+    use_mtf_strategy: bool = False  # Использовать комбинированную стратегию (1h фильтр + 15m вход)
+    mtf_confidence_threshold_1h: float = 0.50  # Порог уверенности для 1h модели (фильтр)
+    mtf_confidence_threshold_15m: float = 0.35  # Порог уверенности для 15m модели (вход)
+    mtf_alignment_mode: str = "strict"  # Режим выравнивания: "strict" или "weighted"
+    mtf_require_alignment: bool = True  # Требовать совпадение направлений обеих моделей
+    
     def __post_init__(self):
         """Validate values."""
         if not 0 <= self.confidence_threshold <= 1:
@@ -47,6 +55,14 @@ class StrategyParams:
         valid_strengths = ["слабое", "умеренное", "среднее", "сильное", "очень_сильное"]
         if self.min_signal_strength not in valid_strengths:
             self.min_signal_strength = "слабое"
+        
+        # Валидация параметров MTF стратегии
+        if not 0 <= self.mtf_confidence_threshold_1h <= 1:
+            self.mtf_confidence_threshold_1h = 0.50
+        if not 0 <= self.mtf_confidence_threshold_15m <= 1:
+            self.mtf_confidence_threshold_15m = 0.35
+        if self.mtf_alignment_mode not in ["strict", "weighted"]:
+            self.mtf_alignment_mode = "strict"
 
 
 @dataclass
@@ -253,6 +269,39 @@ def load_settings() -> AppSettings:
             logger.debug(f"✅ ML_CONFIDENCE_THRESHOLD: {settings.ml_strategy.confidence_threshold}")
         except ValueError:
             pass
+    
+    # Load ML settings from ml_settings.json if exists
+    ml_settings_file = project_root / "ml_settings.json"
+    if ml_settings_file.exists():
+        try:
+            with open(ml_settings_file, 'r', encoding='utf-8') as f:
+                ml_dict = json.load(f)
+                if "confidence_threshold" in ml_dict:
+                    settings.ml_strategy.confidence_threshold = float(ml_dict["confidence_threshold"])
+                if "min_signal_strength" in ml_dict:
+                    settings.ml_strategy.min_signal_strength = ml_dict["min_signal_strength"]
+                if "mtf_enabled" in ml_dict:
+                    settings.ml_strategy.mtf_enabled = bool(ml_dict["mtf_enabled"])
+                if "use_mtf_strategy" in ml_dict:
+                    settings.ml_strategy.use_mtf_strategy = bool(ml_dict["use_mtf_strategy"])
+                    logger.info(f"Loaded use_mtf_strategy from ml_settings.json: {settings.ml_strategy.use_mtf_strategy}")
+                if "mtf_confidence_threshold_1h" in ml_dict:
+                    settings.ml_strategy.mtf_confidence_threshold_1h = float(ml_dict["mtf_confidence_threshold_1h"])
+                if "mtf_confidence_threshold_15m" in ml_dict:
+                    settings.ml_strategy.mtf_confidence_threshold_15m = float(ml_dict["mtf_confidence_threshold_15m"])
+                if "mtf_alignment_mode" in ml_dict:
+                    settings.ml_strategy.mtf_alignment_mode = ml_dict["mtf_alignment_mode"]
+                if "mtf_require_alignment" in ml_dict:
+                    settings.ml_strategy.mtf_require_alignment = bool(ml_dict["mtf_require_alignment"])
+                logger.info(f"✅ ML settings loaded from ml_settings.json")
+        except Exception as e:
+            logger.warning(f"⚠️ Error loading ml_settings.json: {e}")
+    
+    # Load MTF strategy from environment
+    ml_mtf_strategy = os.getenv("ML_MTF_STRATEGY_ENABLED", "").strip()
+    if ml_mtf_strategy:
+        settings.ml_strategy.use_mtf_strategy = ml_mtf_strategy.lower() not in ("0", "false", "no", "off")
+        logger.info(f"✅ ML_MTF_STRATEGY_ENABLED: {settings.ml_strategy.use_mtf_strategy}")
     
     # Load Telegram settings
     telegram_token = os.getenv("TELEGRAM_TOKEN", "").strip()
