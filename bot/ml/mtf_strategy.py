@@ -296,20 +296,28 @@ class MultiTimeframeMLStrategy:
             
             # Если нет сигнала, возвращаем HOLD
             if prediction == 0:
+                # Для HOLD сигнала используем среднее confidence обеих моделей
+                conf_1h = info.get("conf_1h", 0)
+                conf_15m = info.get("conf_15m", 0)
+                hold_confidence = (conf_1h + conf_15m) / 2 if (conf_1h > 0 or conf_15m > 0) else confidence
+                
+                reason = info.get('reason', 'no_signal')
                 return Signal(
                     timestamp=row.name if hasattr(row, 'name') else pd.Timestamp.now(),
                     action=Action.HOLD,
-                    reason=f"mtf_{info.get('reason', 'no_signal')}",
+                    reason=f"mtf_{reason}",
                     price=current_price,
                     indicators_info={
                         "strategy": "MTF_ML",
                         "prediction": "HOLD",
-                        "confidence": round(confidence, 4),
+                        "confidence": round(hold_confidence, 4),
+                        "mtf_confidence": round(hold_confidence, 4),
                         "1h_pred": info.get("pred_1h"),
-                        "1h_conf": round(info.get("conf_1h", 0), 4),
+                        "1h_conf": round(conf_1h, 4),
                         "15m_pred": info.get("pred_15m"),
-                        "15m_conf": round(info.get("conf_15m", 0), 4),
-                        "reason": info.get("reason"),
+                        "15m_conf": round(conf_15m, 4),
+                        "reason": reason,
+                        "mtf_reason": reason,
                     }
                 )
             

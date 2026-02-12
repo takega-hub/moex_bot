@@ -554,17 +554,27 @@ class TradingLoop:
             
             # Log signal
             indicators_info = signal.indicators_info or {}
-            # Для MTF стратегии confidence может быть в mtf_confidence
-            confidence = indicators_info.get('confidence') or indicators_info.get('mtf_confidence', 0)
+            # Для MTF стратегии confidence может быть в mtf_confidence или confidence
+            confidence = indicators_info.get('mtf_confidence') or indicators_info.get('confidence', 0)
+            
+            # Если confidence = 0 и это HOLD, пытаемся вычислить из 1h и 15m confidence
+            if confidence == 0 and signal.action == Action.HOLD and indicators_info.get('strategy') == 'MTF_ML':
+                # Для HOLD сигнала используем среднее confidence обеих моделей
+                conf_1h = indicators_info.get('1h_conf', 0)
+                conf_15m = indicators_info.get('15m_conf', 0)
+                if conf_1h > 0 or conf_15m > 0:
+                    confidence = (conf_1h + conf_15m) / 2
+            
             logger.info(f"[{instrument}] Signal: {signal.action.value} | Confidence: {confidence:.2%} | Price: {current_price:.2f}")
             
             # Дополнительная информация для MTF стратегии
             if indicators_info.get('strategy') == 'MTF_ML':
+                reason = indicators_info.get('mtf_reason') or indicators_info.get('reason') or 'N/A'
                 logger.info(
                     f"[{instrument}] MTF details: "
                     f"1h={indicators_info.get('1h_pred', '?')}({indicators_info.get('1h_conf', 0):.2%}), "
                     f"15m={indicators_info.get('15m_pred', '?')}({indicators_info.get('15m_conf', 0):.2%}), "
-                    f"reason={indicators_info.get('mtf_reason', 'N/A')}"
+                    f"reason={reason}"
                 )
             
             # Add to history
