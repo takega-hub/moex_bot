@@ -380,6 +380,18 @@ class TelegramBot:
                 await self.show_status(query)
             elif query.data == "settings_instruments":
                 await self.show_instruments_settings(query)
+            elif query.data.startswith("toggle_ml_"):
+                # Обрабатываем ML настройки ПЕРЕД общим toggle_
+                setting_name = query.data.replace("toggle_ml_", "")
+                await self.toggle_ml_setting(query, setting_name)
+            elif query.data.startswith("toggle_risk_"):
+                # Обрабатываем Risk настройки ПЕРЕД общим toggle_
+                setting_name = query.data.replace("toggle_risk_", "")
+                await self.toggle_risk_setting(query, setting_name)
+            elif query.data.startswith("toggle_strategy_"):
+                # Обрабатываем Strategy настройки ПЕРЕД общим toggle_
+                setting_name = query.data.replace("toggle_strategy_", "")
+                await self.toggle_strategy_setting(query, setting_name)
             elif query.data.startswith("toggle_"):
                 ticker = query.data.replace("toggle_", "")
                 logger.info(f"Toggling instrument {ticker}...")
@@ -467,9 +479,7 @@ class TelegramBot:
             elif query.data.startswith("edit_ml_"):
                 setting_name = query.data.replace("edit_ml_", "")
                 await self.start_edit_ml_setting(query, setting_name)
-            elif query.data.startswith("toggle_ml_"):
-                setting_name = query.data.replace("toggle_ml_", "")
-                await self.toggle_ml_setting(query, setting_name)
+            # toggle_ml_ обрабатывается выше (строка 383), перед общим toggle_
             elif query.data.startswith("select_mtf_models_"):
                 ticker = query.data.replace("select_mtf_models_", "")
                 await self.show_mtf_model_selection(query, ticker)
@@ -1146,11 +1156,46 @@ class TelegramBot:
                     del self.trading_loop.strategies[ticker]
                     logger.info(f"Cleared existing strategy for {ticker} to apply new MTF models")
                 
+                # Принудительно перезагружаем стратегию сразу
+                from pathlib import Path
+                models_dir = Path("ml_models")
+                model_1h_path = models_dir / f"{mtf_models['model_1h']}.pkl"
+                model_15m_path = models_dir / f"{mtf_models['model_15m']}.pkl"
+                
+                if model_1h_path.exists() and model_15m_path.exists():
+                    try:
+                        from bot.ml.mtf_strategy import MultiTimeframeMLStrategy
+                        self.trading_loop.strategies[ticker] = MultiTimeframeMLStrategy(
+                            model_1h_path=str(model_1h_path),
+                            model_15m_path=str(model_15m_path),
+                            confidence_threshold_1h=self.settings.ml_strategy.mtf_confidence_threshold_1h,
+                            confidence_threshold_15m=self.settings.ml_strategy.mtf_confidence_threshold_15m,
+                            alignment_mode=self.settings.ml_strategy.mtf_alignment_mode,
+                            require_alignment=self.settings.ml_strategy.mtf_require_alignment,
+                        )
+                        logger.info(f"✅ MTF strategy reloaded immediately for {ticker}")
+                    except Exception as e:
+                        logger.error(f"Error reloading MTF strategy for {ticker}: {e}", exc_info=True)
+                        await query.answer(
+                            f"⚠️ Модели сохранены, но ошибка при перезагрузке стратегии: {str(e)[:100]}",
+                            show_alert=True
+                        )
+                        await self.show_mtf_model_selection(query, ticker)
+                        return
+                else:
+                    logger.warning(f"MTF model files not found for {ticker}")
+                    await query.answer(
+                        "⚠️ Модели сохранены, но файлы моделей не найдены. Стратегия будет загружена при следующем цикле.",
+                        show_alert=True
+                    )
+                    await self.show_mtf_model_selection(query, ticker)
+                    return
+                
                 await query.answer(
                     f"✅ MTF стратегия применена для {ticker}!\n"
                     f"1h: {mtf_models['model_1h']}\n"
                     f"15m: {mtf_models['model_15m']}\n\n"
-                    "Стратегия будет перезагружена при следующем цикле торговли.",
+                    "Стратегия перезагружена и готова к использованию.",
                     show_alert=True
                 )
                 await self.show_mtf_model_selection(query, ticker)
