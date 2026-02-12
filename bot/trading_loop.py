@@ -367,6 +367,7 @@ class TradingLoop:
             
             # Initialize strategy if needed
             if instrument not in self.strategies:
+                logger.info(f"[{instrument}] 🔄 Strategy not loaded, initializing...")
                 from pathlib import Path
                 models_dir = Path("ml_models")
                 
@@ -459,7 +460,15 @@ class TradingLoop:
                         return
             
             # Generate signal
-            strategy = self.strategies[instrument]
+            strategy = self.strategies.get(instrument)
+            if not strategy:
+                logger.warning(f"[{instrument}] ⚠️ No strategy loaded for instrument")
+                return
+            
+            # Логируем тип стратегии
+            from bot.ml.mtf_strategy import MultiTimeframeMLStrategy
+            strategy_type = "MTF" if isinstance(strategy, MultiTimeframeMLStrategy) else "Single"
+            logger.info(f"[{instrument}] 📊 Strategy type: {strategy_type}")
             
             if len(df) >= 2:
                 row = df.iloc[-2]  # Last closed candle
@@ -546,8 +555,18 @@ class TradingLoop:
             
             # Log signal
             indicators_info = signal.indicators_info or {}
-            confidence = indicators_info.get('confidence', 0)
+            # Для MTF стратегии confidence может быть в mtf_confidence
+            confidence = indicators_info.get('confidence') or indicators_info.get('mtf_confidence', 0)
             logger.info(f"[{instrument}] Signal: {signal.action.value} | Confidence: {confidence:.2%} | Price: {current_price:.2f}")
+            
+            # Дополнительная информация для MTF стратегии
+            if indicators_info.get('strategy') == 'MTF_ML':
+                logger.info(
+                    f"[{instrument}] MTF details: "
+                    f"1h={indicators_info.get('1h_pred', '?')}({indicators_info.get('1h_conf', 0):.2%}), "
+                    f"15m={indicators_info.get('15m_pred', '?')}({indicators_info.get('15m_conf', 0):.2%}), "
+                    f"reason={indicators_info.get('mtf_reason', 'N/A')}"
+                )
             
             # Add to history
             if signal.action != Action.HOLD:
