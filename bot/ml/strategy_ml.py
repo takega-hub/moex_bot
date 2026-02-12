@@ -268,6 +268,20 @@ class MLStrategy:
                 else:
                     pred_value = int(prediction)
                 
+                # Преобразуем классы [0 1 2] в [-1 0 1] если модель использует другую схему
+                # Проверяем классы модели
+                model_classes = getattr(self.model, 'classes_', None)
+                if model_classes is not None and len(model_classes) == 3:
+                    # Если модель использует [0 1 2], преобразуем
+                    if np.array_equal(model_classes, [0, 1, 2]) or np.array_equal(model_classes, np.array([0, 1, 2])):
+                        # Преобразуем: 0 -> -1, 1 -> 0, 2 -> 1
+                        if pred_value == 0:
+                            pred_value = -1
+                        elif pred_value == 1:
+                            pred_value = 0
+                        elif pred_value == 2:
+                            pred_value = 1
+                
                 # Determine action
                 if pred_value == 1:
                     action = Action.LONG
@@ -281,14 +295,32 @@ class MLStrategy:
                 if probabilities is not None and len(probabilities) > 0:
                     probs = probabilities[0]
                     
+                    # Проверяем схему классов модели
+                    model_classes = getattr(self.model, 'classes_', None)
+                    use_012_scheme = False
+                    if model_classes is not None and len(model_classes) == 3:
+                        if np.array_equal(model_classes, [0, 1, 2]) or np.array_equal(model_classes, np.array([0, 1, 2])):
+                            use_012_scheme = True
+                    
                     # For ensemble models (TripleEnsemble, etc.), probabilities are ordered as [SHORT(-1), HOLD(0), LONG(1)]
-                    if len(probs) >= 3:  # Three-class: -1, 0, 1
-                        if action == Action.LONG:
-                            confidence = float(probs[2])  # Probability of LONG (class 1)
-                        elif action == Action.SHORT:
-                            confidence = float(probs[0])  # Probability of SHORT (class -1)
-                        else:  # HOLD
-                            confidence = float(probs[1])  # Probability of HOLD (class 0)
+                    # For XGBoost models with [0 1 2], probabilities are ordered as [SHORT(0), HOLD(1), LONG(2)]
+                    if len(probs) >= 3:  # Three-class
+                        if use_012_scheme:
+                            # XGBoost схема: [0=SHORT, 1=HOLD, 2=LONG]
+                            if action == Action.LONG:
+                                confidence = float(probs[2])  # Probability of LONG (class 2)
+                            elif action == Action.SHORT:
+                                confidence = float(probs[0])  # Probability of SHORT (class 0)
+                            else:  # HOLD
+                                confidence = float(probs[1])  # Probability of HOLD (class 1)
+                        else:
+                            # Стандартная схема: [-1=SHORT, 0=HOLD, 1=LONG]
+                            if action == Action.LONG:
+                                confidence = float(probs[2])  # Probability of LONG (class 1)
+                            elif action == Action.SHORT:
+                                confidence = float(probs[0])  # Probability of SHORT (class -1)
+                            else:  # HOLD
+                                confidence = float(probs[1])  # Probability of HOLD (class 0)
                     elif len(probs) == 2:  # Binary classification
                         confidence = float(max(probs))
                     else:
