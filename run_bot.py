@@ -98,13 +98,15 @@ async def main():
         try:
             state = BotState()
             
-            # Sync instruments: prioritize settings, but keep state if settings is empty
-            if settings.active_instruments:
+            # Sync instruments: prioritize state (runtime_state.json), fallback to settings (.env)
+            # This allows Telegram bot to manage active instruments without being overwritten
+            if state.active_instruments:
+                logger.info(f"✅ Using {len(state.active_instruments)} active instruments from saved state: {state.active_instruments}")
+            elif settings.active_instruments:
+                # Only use .env if runtime_state.json is empty (first run)
                 state.active_instruments = settings.active_instruments
                 state.save()
-                logger.info(f"✅ Loaded {len(settings.active_instruments)} active instruments from settings: {settings.active_instruments}")
-            elif state.active_instruments:
-                logger.info(f"✅ Using {len(state.active_instruments)} active instruments from saved state: {state.active_instruments}")
+                logger.info(f"✅ Loaded {len(settings.active_instruments)} active instruments from settings (first run): {state.active_instruments}")
             else:
                 logger.warning("⚠️ No active instruments found! Add instruments via:")
                 logger.warning("   1. .env file: TRADING_INSTRUMENTS=VBH6,SRH6,GLDRUBF")
