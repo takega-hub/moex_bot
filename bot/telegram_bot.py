@@ -322,23 +322,48 @@ class TelegramBot:
             status_text += "  (нет активных инструментов)\n"
         else:
             for ticker in self.state.active_instruments:
-                model_path = self.state.instrument_models.get(ticker)
-                if model_path and Path(model_path).exists():
-                    model_name = Path(model_path).stem
-                    ml_settings = self.settings.get_ml_settings_for_instrument(ticker)
-                    status_text += f"Инструмент: {ticker} | Модель: {model_name}\n"
-                    status_text += f"   🎯 Уверенность: ≥{ml_settings.confidence_threshold*100:.0f}%\n"
-                else:
-                    models = self.model_manager.find_models_for_instrument(ticker)
-                    if models:
-                        model_path = str(models[0])
-                        self.model_manager.apply_model(ticker, model_path)
-                        model_name = models[0].stem
+                # Проверяем, используется ли MTF стратегия
+                use_mtf = self.settings.ml_strategy.use_mtf_strategy
+                is_mtf = False
+                
+                if use_mtf and hasattr(self, 'trading_loop') and self.trading_loop:
+                    strategy = self.trading_loop.strategies.get(ticker)
+                    if strategy and hasattr(strategy, 'predict_combined'):
+                        is_mtf = True
+                        # Загружаем MTF модели
+                        mtf_models = self.load_mtf_models_for_instrument(ticker)
+                        if mtf_models.get("model_1h") and mtf_models.get("model_15m"):
+                            status_text += f"Инструмент: {ticker} | MTF: {mtf_models['model_1h']} + {mtf_models['model_15m']}\n"
+                            status_text += f"   🎯 Уверенность: 1h≥{self.settings.ml_strategy.mtf_confidence_threshold_1h*100:.0f}%, 15m≥{self.settings.ml_strategy.mtf_confidence_threshold_15m*100:.0f}%\n"
+                        else:
+                            status_text += f"Инструмент: {ticker} | MTF: ⚠️ Модели не выбраны\n"
+                    else:
+                        # MTF включена, но стратегия не загружена
+                        mtf_models = self.load_mtf_models_for_instrument(ticker)
+                        if mtf_models.get("model_1h") and mtf_models.get("model_15m"):
+                            status_text += f"Инструмент: {ticker} | MTF: {mtf_models['model_1h']} + {mtf_models['model_15m']} (ожидание загрузки)\n"
+                        else:
+                            status_text += f"Инструмент: {ticker} | MTF: ⚠️ Модели не выбраны\n"
+                
+                if not is_mtf:
+                    # Обычная стратегия
+                    model_path = self.state.instrument_models.get(ticker)
+                    if model_path and Path(model_path).exists():
+                        model_name = Path(model_path).stem
                         ml_settings = self.settings.get_ml_settings_for_instrument(ticker)
-                        status_text += f"Инструмент: {ticker} | Модель: {model_name} (авто)\n"
+                        status_text += f"Инструмент: {ticker} | Модель: {model_name}\n"
                         status_text += f"   🎯 Уверенность: ≥{ml_settings.confidence_threshold*100:.0f}%\n"
                     else:
-                        status_text += f"Инструмент: {ticker} | Модель: ❌ Не найдена\n"
+                        models = self.model_manager.find_models_for_instrument(ticker)
+                        if models:
+                            model_path = str(models[0])
+                            self.model_manager.apply_model(ticker, model_path)
+                            model_name = models[0].stem
+                            ml_settings = self.settings.get_ml_settings_for_instrument(ticker)
+                            status_text += f"Инструмент: {ticker} | Модель: {model_name} (авто)\n"
+                            status_text += f"   🎯 Уверенность: ≥{ml_settings.confidence_threshold*100:.0f}%\n"
+                        else:
+                            status_text += f"Инструмент: {ticker} | Модель: ❌ Не найдена\n"
                 
                 # Cooldown
                 cooldown_info = self.state.get_cooldown_info(ticker) if hasattr(self.state, 'get_cooldown_info') else None
@@ -987,8 +1012,13 @@ class TelegramBot:
             "model_15m": model_15m
         }
         
-        with open(mtf_models_file, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
+        try:
+            with open(mtf_models_file, 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+            logger.info(f"✅ MTF models saved to {mtf_models_file} for {ticker.upper()}: 1h={model_1h}, 15m={model_15m}")
+        except Exception as e:
+            logger.error(f"❌ Error saving MTF models to {mtf_models_file}: {e}")
+            raise
     
     async def show_mtf_model_selection(self, query, ticker: str):
         """Показывает меню выбора MTF моделей для инструмента."""
@@ -1097,6 +1127,8 @@ class TelegramBot:
         
         # Загружаем текущие MTF модели
         mtf_models = self.load_mtf_models_for_instrument(ticker)
+        if not mtf_models:
+            mtf_models = {}
         
         # Обновляем выбранную модель
         if timeframe == "1h":
@@ -1110,6 +1142,14 @@ class TelegramBot:
             mtf_models.get("model_1h"),
             mtf_models.get("model_15m")
         )
+        
+        # Проверяем, что сохранение прошло успешно
+        saved_models = self.load_mtf_models_for_instrument(ticker)
+        if saved_models.get(f"model_{timeframe}") != model_name:
+            logger.error(f"Failed to save MTF model for {ticker}: expected {model_name}, got {saved_models.get(f'model_{timeframe}')}")
+            await query.answer(f"⚠️ Модель выбрана, но не сохранена. Попробуйте еще раз.", show_alert=True)
+        else:
+            logger.info(f"✅ MTF model saved for {ticker}: {timeframe}={model_name}")
         
         await query.answer(f"✅ {timeframe.upper()} модель выбрана: {model_name}!", show_alert=True)
         await self.show_mtf_model_selection(query, ticker)
@@ -1190,6 +1230,14 @@ class TelegramBot:
                     await self.show_mtf_model_selection(query, ticker)
                     return
                 
+                # Убеждаемся, что модели сохранены
+                self.save_mtf_models_for_instrument(
+                    ticker,
+                    mtf_models['model_1h'],
+                    mtf_models['model_15m']
+                )
+                logger.info(f"✅ MTF models saved for {ticker}: 1h={mtf_models['model_1h']}, 15m={mtf_models['model_15m']}")
+                
                 await query.answer(
                     f"✅ MTF стратегия применена для {ticker}!\n"
                     f"1h: {mtf_models['model_1h']}\n"
@@ -1197,6 +1245,7 @@ class TelegramBot:
                     "Стратегия перезагружена и готова к использованию.",
                     show_alert=True
                 )
+                # Обновляем UI - загружаем заново, чтобы показать актуальные модели
                 await self.show_mtf_model_selection(query, ticker)
             except Exception as e:
                 logger.error(f"Error applying MTF strategy for {ticker}: {e}", exc_info=True)
