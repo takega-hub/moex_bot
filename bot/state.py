@@ -209,6 +209,18 @@ class BotState:
             
             return consecutive_losses
     
+    def update_trade_tp_sl(self, instrument: str, take_profit: Optional[float], stop_loss: Optional[float]):
+        """Update TP/SL for an open trade."""
+        with self.lock:
+            for trade in reversed(self.trades):
+                if trade.instrument == instrument and trade.status == "open":
+                    if take_profit is not None:
+                        trade.take_profit = take_profit
+                    if stop_loss is not None:
+                        trade.stop_loss = stop_loss
+                    break
+        self.save()
+    
     def update_trade_on_close(self, instrument: str, exit_price: float, pnl_usd: float, pnl_pct: float, exit_reason: Optional[str] = None):
         """Update trade on close."""
         with self.lock:

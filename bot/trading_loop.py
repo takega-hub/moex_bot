@@ -111,7 +111,9 @@ class TradingLoop:
                     continue
                 
                 active_count = len(self.state.active_instruments)
-                logger.info(f"🔄 Processing {active_count} instruments...")
+                logger.info(
+                    f"🔄 Processing {active_count} instruments: {self.state.active_instruments}"
+                )
                 
                 if active_count == 0:
                     logger.warning("⚠️ No active instruments! Bot is waiting. Add instruments via Telegram or .env file.")
@@ -119,7 +121,11 @@ class TradingLoop:
                     continue
                 
                 for instrument in self.state.active_instruments:
-                    await self.process_instrument(instrument)
+                    logger.debug(f"🔄 About to process instrument: {instrument}")
+                    try:
+                        await self.process_instrument(instrument)
+                    except Exception as e:
+                        logger.error(f"❌ Error processing {instrument}: {e}", exc_info=True)
                     if len(self.state.active_instruments) > 1:
                         await asyncio.sleep(2)
                 
@@ -169,14 +175,63 @@ class TradingLoop:
                 if pos_info and pos_info.get("retCode") == 0:
                     positions = pos_info.get("result", {}).get("list", [])
                     
+                    # Log all found positions for debugging
+                    found_tickers = []
+                    skipped_tickers = []
+                    
                     for position in positions:
                         figi = position.get("figi")
-                        # Get ticker from FIGI to check if it's in active instruments
+                        quantity = abs(float(position.get("quantity", 0)))
+                        if quantity == 0:
+                            continue
+                        
+                        # Get ticker from FIGI
                         instrument_info = self.storage.get_instrument(figi)
-                        if instrument_info:
-                            ticker = instrument_info.get("ticker")
-                            if ticker and ticker in self.state.active_instruments:
+                        if not instrument_info:
+                            logger.warning(
+                                f"⚠️ Position found with FIGI {figi} but instrument not found in storage. "
+                                f"Quantity: {quantity}"
+                            )
+                            continue
+                        
+                        ticker = instrument_info.get("ticker")
+                        if not ticker:
+                            logger.warning(
+                                f"⚠️ Position found with FIGI {figi} but ticker is missing. "
+                                f"Instrument info: {instrument_info}"
+                            )
+                            continue
+                        
+                        if ticker in self.state.active_instruments:
+                            found_tickers.append(ticker)
+                            await self.check_position(figi, position)
+                        else:
+                            skipped_tickers.append(ticker)
+                            logger.warning(
+                                f"⚠️ Position found for {ticker} (FIGI: {figi}, Qty: {quantity}) "
+                                f"but it's not in active_instruments. "
+                                f"Current active ({len(self.state.active_instruments)}/{self.state.max_active_instruments}): {self.state.active_instruments}. "
+                                f"Adding {ticker} to active instruments automatically."
+                            )
+                            # Automatically add instrument with open position to active list
+                            result = await asyncio.to_thread(self.state.enable_instrument, ticker)
+                            if result:
+                                logger.info(f"✅ Added {ticker} to active instruments. Now checking position.")
+                                # Check position now that it's active
                                 await self.check_position(figi, position)
+                            elif result is None:
+                                logger.error(
+                                    f"❌ Cannot add {ticker} - max active instruments limit reached "
+                                    f"({len(self.state.active_instruments)}/{self.state.max_active_instruments}). "
+                                    f"Please remove an instrument manually or increase the limit."
+                                )
+                    
+                    if found_tickers or skipped_tickers:
+                        logger.debug(
+                            f"📊 Position monitoring: "
+                            f"Found {len(found_tickers)} active positions: {found_tickers}, "
+                            f"Skipped {len(skipped_tickers)}: {skipped_tickers}"
+                        )
                 
                 await asyncio.sleep(25)
                 
@@ -189,6 +244,12 @@ class TradingLoop:
         try:
             logger.info(f"[{instrument}] 🚀 START process_instrument()")
             
+            # Log active instruments for debugging
+            logger.debug(
+                f"[{instrument}] Active instruments: {self.state.active_instruments}, "
+                f"Current instrument in list: {instrument in self.state.active_instruments}"
+            )
+            
             # Check cooldown
             if await asyncio.to_thread(self.state.is_instrument_in_cooldown, instrument):
                 logger.info(f"[{instrument}] In cooldown, returning")
@@ -200,7 +261,7 @@ class TradingLoop:
             
             if not instrument_info:
                 # Try to find instrument via API (с таймаутом 30 секунд)
-                logger.info(f"[{instrument}] Instrument not in storage, searching via API...")
+                logger.warning(f"[{instrument}] ⚠️ Instrument not in storage, searching via API...")
                 try:
                     instrument_data = await asyncio.wait_for(
                         asyncio.to_thread(
@@ -899,17 +960,70 @@ class TradingLoop:
                     exit_reason = "SL"
                     logger.info(f"[{ticker}] ❌ SL hit: {current_price:.2f} >= {local_pos.stop_loss:.2f}")
             
-            # Warn if TP/SL are missing
-            if not local_pos.take_profit and not local_pos.stop_loss:
-                logger.warning(
-                    f"[{ticker}] ⚠️ Position has no TP/SL! "
-                    f"Entry: {local_pos.entry_price:.2f}, Current: {current_price:.2f}, "
-                    f"PnL: {((current_price - local_pos.entry_price) / local_pos.entry_price * 100):+.2f}%"
-                )
-            elif not local_pos.take_profit:
-                logger.warning(f"[{ticker}] ⚠️ Position has no TP! Only SL: {local_pos.stop_loss:.2f}")
-            elif not local_pos.stop_loss:
-                logger.warning(f"[{ticker}] ⚠️ Position has no SL! Only TP: {local_pos.take_profit:.2f}")
+            # Auto-set TP/SL if missing
+            if not local_pos.take_profit or not local_pos.stop_loss:
+                # Try to get ATR from storage for better TP/SL calculation
+                df_for_atr = self.storage.get_candles(figi=figi, interval=self.settings.timeframe, limit=20)
+                atr = None
+                if not df_for_atr.empty and 'atr' in df_for_atr.columns:
+                    atr = float(df_for_atr['atr'].iloc[-1])
+                
+                # Risk/Reward ratio: 2.5:1 (TP = 2.5 * SL)
+                risk_reward_ratio = 2.5
+                
+                # Default TP/SL percentages from config
+                sl_pct = self.settings.risk.stop_loss_pct  # Default 1%
+                tp_pct = self.settings.risk.take_profit_pct  # Default 2%
+                
+                # Use ATR if available for more accurate SL
+                if atr and local_pos.entry_price > 0:
+                    atr_pct = (atr / local_pos.entry_price)
+                    sl_pct = max(0.005, min(atr_pct, 0.02))  # Between 0.5% and 2%
+                    tp_pct = sl_pct * risk_reward_ratio  # TP = 2.5 * SL
+                
+                # Calculate TP/SL prices based on entry price
+                new_take_profit = None
+                new_stop_loss = None
+                
+                if local_pos.side == "Buy":
+                    # LONG position
+                    if not local_pos.take_profit:
+                        new_take_profit = local_pos.entry_price * (1 + tp_pct)
+                    if not local_pos.stop_loss:
+                        new_stop_loss = local_pos.entry_price * (1 - sl_pct)
+                else:
+                    # SHORT position
+                    if not local_pos.take_profit:
+                        new_take_profit = local_pos.entry_price * (1 - tp_pct)
+                    if not local_pos.stop_loss:
+                        new_stop_loss = local_pos.entry_price * (1 + sl_pct)
+                
+                # Update TP/SL if calculated
+                if new_take_profit or new_stop_loss:
+                    await asyncio.to_thread(
+                        self.state.update_trade_tp_sl,
+                        ticker,
+                        new_take_profit if new_take_profit else local_pos.take_profit,
+                        new_stop_loss if new_stop_loss else local_pos.stop_loss
+                    )
+                    logger.info(
+                        f"[{ticker}] ✅ Auto-set TP/SL: "
+                        f"TP={new_take_profit if new_take_profit else local_pos.take_profit:.2f}, "
+                        f"SL={new_stop_loss if new_stop_loss else local_pos.stop_loss:.2f}, "
+                        f"Entry={local_pos.entry_price:.2f}, "
+                        f"ATR={'used' if atr else 'not available'}"
+                    )
+                    # Update local_pos for current check
+                    if new_take_profit:
+                        local_pos.take_profit = new_take_profit
+                    if new_stop_loss:
+                        local_pos.stop_loss = new_stop_loss
+                else:
+                    logger.warning(
+                        f"[{ticker}] ⚠️ Position has no TP/SL and cannot calculate! "
+                        f"Entry: {local_pos.entry_price:.2f}, Current: {current_price:.2f}, "
+                        f"PnL: {((current_price - local_pos.entry_price) / local_pos.entry_price * 100):+.2f}%"
+                    )
             
             # Close position if TP/SL hit
             if should_close and exit_reason:
