@@ -465,8 +465,7 @@ class TradingLoop:
                 logger.warning(f"[{instrument}] ⚠️ No strategy loaded for instrument")
                 return
             
-            # Логируем тип стратегии
-            from bot.ml.mtf_strategy import MultiTimeframeMLStrategy
+            # Логируем тип стратегии (MultiTimeframeMLStrategy уже импортирован в начале файла)
             strategy_type = "MTF" if isinstance(strategy, MultiTimeframeMLStrategy) else "Single"
             logger.info(f"[{instrument}] 📊 Strategy type: {strategy_type}")
             
