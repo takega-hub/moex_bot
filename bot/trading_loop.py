@@ -761,16 +761,16 @@ class TradingLoop:
             
             # Use availableBalance from API directly - exchange knows best what's available
             # Don't try to calculate used margin ourselves - exchange already accounts for it
-            # Apply conservative safety factor (40%) to account for exchange's internal calculations
+            # Apply conservative safety factor (30%) to account for exchange's internal calculations
             # Exchange may have additional requirements (variation margin, fees, etc.)
-            api_available_safe = available_balance * 0.4  # Use only 40% of API available balance
+            api_available_safe = available_balance * 0.30  # Use only 30% of API available balance (more conservative)
             
             # Log both values for comparison
             logger.info(
                 f"[{instrument}] 💰 Margin info: "
                 f"Total balance: {total_balance:.2f} руб, "
                 f"API available balance: {available_balance:.2f} руб, "
-                f"API available (40%): {api_available_safe:.2f} руб, "
+                f"API available (30%): {api_available_safe:.2f} руб, "
                 f"Margin used by other positions (estimated): {total_margin_used:.2f} руб"
             )
             
@@ -787,8 +787,9 @@ class TradingLoop:
             
             # Calculate position size
             # For Tinkoff futures, margin is typically ~12% of position value
-            # Use 20% for safety margin (very conservative) - exchange may require more
-            margin_rate = 0.20  # 20% margin requirement (very conservative, actual is ~12%)
+            # Use 25% for safety margin (very conservative) - exchange may require more due to volatility
+            # Increased from 20% to 25% to account for variation margin and exchange requirements
+            margin_rate = 0.25  # 25% margin requirement (very conservative, actual is ~12%)
             
             if lot_size <= 0:
                 lot_size = 1.0
@@ -824,9 +825,10 @@ class TradingLoop:
                     # Balance is too small even for 1 lot
                     available_margin = balance
             
-            # Apply safety margin: use only 85% of available margin to account for exchange requirements
-            # Exchange may require more margin than calculated due to volatility, fees, etc.
-            safety_factor = 0.85
+            # Apply safety margin: use only 70% of available margin to account for exchange requirements
+            # Exchange may require more margin than calculated due to volatility, fees, variation margin, etc.
+            # More conservative to avoid "Not enough assets" errors
+            safety_factor = 0.70  # Reduced from 0.85 to 0.70 for more safety
             available_margin = available_margin * safety_factor
             
             # Check if we have enough margin for at least 1 lot
@@ -1058,13 +1060,13 @@ class TradingLoop:
                     logger.warning(f"[{ticker}] ⚠️ Cannot get current price for position check")
                     return
             
-            # Log position status for debugging
-            logger.debug(
+            # Log position status (INFO level for visibility)
+            logger.info(
                 f"[{ticker}] 📊 Position check: "
                 f"Price={current_price:.2f}, "
                 f"Entry={local_pos.entry_price:.2f}, "
-                f"TP={local_pos.take_profit}, "
-                f"SL={local_pos.stop_loss}, "
+                f"TP={local_pos.take_profit if local_pos.take_profit else 'None'}, "
+                f"SL={local_pos.stop_loss if local_pos.stop_loss else 'None'}, "
                 f"Side={local_pos.side}, "
                 f"Qty={quantity}"
             )
@@ -1202,8 +1204,8 @@ class TradingLoop:
                 margin = trade.entry_price * trade.quantity
                 pnl_usd = (pnl_pct / 100) * margin
                 
-                # Update trade
-                self.state.update_trade_on_close(figi, current_price, pnl_usd, pnl_pct, exit_reason=reason)
+                # Update trade - use ticker, not figi!
+                self.state.update_trade_on_close(ticker, current_price, pnl_usd, pnl_pct, exit_reason=reason)
                 
                 # Update exit reason
                 for t in reversed(self.state.trades):
@@ -1254,8 +1256,8 @@ class TradingLoop:
             margin = local_pos.entry_price * local_pos.quantity
             pnl_usd = (pnl_pct / 100) * margin
             
-            # Update trade
-            self.state.update_trade_on_close(figi, exit_price, pnl_usd, pnl_pct)
+            # Update trade - use ticker, not figi!
+            self.state.update_trade_on_close(ticker, exit_price, pnl_usd, pnl_pct)
             
             # Update exit reason
             for t in reversed(self.state.trades):

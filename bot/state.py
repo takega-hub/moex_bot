@@ -75,7 +75,11 @@ class BotState:
     
     def load(self):
         """Load state from file."""
+        import logging
+        logger = logging.getLogger(__name__)
+        
         if not self.state_file.exists():
+            logger.debug(f"State file {self.state_file} does not exist, using defaults")
             return
         try:
             with open(self.state_file, 'r', encoding='utf-8') as f:
@@ -86,8 +90,31 @@ class BotState:
                 self.instrument_models = data.get("instrument_models", {})
                 
                 # Load trades
-                for t in data.get("trades", []):
-                    self.trades.append(TradeRecord(**t))
+                trades_data = data.get("trades", [])
+                closed_count = 0
+                open_count = 0
+                for t in trades_data:
+                    trade = TradeRecord(**t)
+                    self.trades.append(trade)
+                    if trade.status == "closed":
+                        closed_count += 1
+                    elif trade.status == "open":
+                        open_count += 1
+                
+                logger.info(
+                    f"[state] Loaded {len(trades_data)} trades: "
+                    f"{closed_count} closed, {open_count} open"
+                )
+                
+                # Log total PnL from closed trades
+                if closed_count > 0:
+                    closed_trades = [t for t in self.trades if t.status == "closed"]
+                    total_pnl = sum(t.pnl_usd for t in closed_trades)
+                    logger.info(
+                        f"[state] Total PnL from closed trades: {total_pnl:.2f} руб "
+                        f"({len([t for t in closed_trades if t.pnl_usd > 0])} wins, "
+                        f"{len([t for t in closed_trades if t.pnl_usd < 0])} losses)"
+                    )
                 
                 # Load signals
                 for s in data.get("signals", []):
@@ -96,11 +123,16 @@ class BotState:
                 # Load cooldowns
                 for instrument, cooldown_data in data.get("cooldowns", {}).items():
                     self.cooldowns[instrument] = InstrumentCooldown(**cooldown_data)
+            
+            logger.debug(f"State loaded: {len(self.active_instruments)} active instruments: {self.active_instruments}")
         except Exception as e:
-            print(f"[state] Error loading state: {e}")
+            logger.error(f"[state] Error loading state from {self.state_file}: {e}", exc_info=True)
     
     def save(self):
         """Save state to file."""
+        import logging
+        logger = logging.getLogger(__name__)
+        
         with self.lock:
             try:
                 data = {
@@ -112,10 +144,20 @@ class BotState:
                     "signals": [asdict(s) for s in self.signals[-1000:]],
                     "cooldowns": {instrument: asdict(cooldown) for instrument, cooldown in self.cooldowns.items()}
                 }
-                with open(self.state_file, 'w', encoding='utf-8') as f:
+                
+                # Создаем временный файл для атомарной записи
+                temp_file = self.state_file.with_suffix('.tmp')
+                with open(temp_file, 'w', encoding='utf-8') as f:
                     json.dump(data, f, indent=2, ensure_ascii=False)
+                
+                # Атомарно заменяем старый файл новым
+                temp_file.replace(self.state_file)
+                
+                logger.debug(f"State saved successfully: {len(self.active_instruments)} active instruments: {self.active_instruments}")
+            except PermissionError as e:
+                logger.error(f"[state] Permission denied saving state to {self.state_file}: {e}")
             except Exception as e:
-                print(f"[state] Error saving state: {e}")
+                logger.error(f"[state] Error saving state to {self.state_file}: {e}", exc_info=True)
     
     def set_running(self, status: bool):
         """Set running status."""
@@ -223,9 +265,22 @@ class BotState:
     
     def update_trade_on_close(self, instrument: str, exit_price: float, pnl_usd: float, pnl_pct: float, exit_reason: Optional[str] = None):
         """Update trade on close."""
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        trade_found = False
         with self.lock:
+            # Log all open trades for this instrument for debugging
+            open_trades_for_instrument = [t for t in self.trades if t.instrument == instrument and t.status == "open"]
+            logger.info(f"[state] update_trade_on_close: instrument={instrument}, open_trades={len(open_trades_for_instrument)}")
+            
             for trade in reversed(self.trades):
                 if trade.instrument == instrument and trade.status == "open":
+                    logger.info(
+                        f"[state] ✅ Found open trade to close: {instrument}, "
+                        f"entry={trade.entry_price:.2f}, exit={exit_price:.2f}, "
+                        f"PnL={pnl_usd:.2f} руб ({pnl_pct:.2f}%)"
+                    )
                     trade.exit_price = exit_price
                     trade.exit_time = datetime.now().isoformat()
                     trade.pnl_usd = pnl_usd
@@ -233,7 +288,15 @@ class BotState:
                     trade.status = "closed"
                     if exit_reason:
                         trade.exit_reason = exit_reason
+                    trade_found = True
                     break
+        
+        if not trade_found:
+            logger.warning(
+                f"[state] ⚠️ No open trade found to close for {instrument}. "
+                f"Total trades: {len(self.trades)}, "
+                f"Open trades for {instrument}: {len(open_trades_for_instrument)}"
+            )
         
         if pnl_usd < 0:
             consecutive_losses = self.get_consecutive_losses(instrument)
@@ -242,17 +305,45 @@ class BotState:
                 self.set_cooldown(instrument, consecutive_losses, reason)
         
         self.save()
+        
+        # Log updated stats after save
+        if trade_found:
+            closed_trades = [t for t in self.trades if t.status == "closed"]
+            total_pnl = sum(t.pnl_usd for t in closed_trades)
+            logger.info(
+                f"[state] 📊 Updated stats: Total closed trades: {len(closed_trades)}, "
+                f"Total PnL: {total_pnl:.2f} руб"
+            )
     
     def get_stats(self) -> Dict[str, Any]:
         """Get trading statistics."""
+        import logging
+        logger = logging.getLogger(__name__)
+        
         with self.lock:
             closed_trades = [t for t in self.trades if t.status == "closed"]
+            open_trades = [t for t in self.trades if t.status == "open"]
+            
+            logger.debug(
+                f"[state] get_stats: Total trades: {len(self.trades)}, "
+                f"Closed: {len(closed_trades)}, Open: {len(open_trades)}"
+            )
+            
             if not closed_trades:
+                logger.debug("[state] No closed trades found, returning zero stats")
                 return {"total_pnl": 0.0, "win_rate": 0.0, "total_trades": 0}
             
             total_pnl = sum(t.pnl_usd for t in closed_trades)
             wins = len([t for t in closed_trades if t.pnl_usd > 0])
+            losses = len([t for t in closed_trades if t.pnl_usd < 0])
             win_rate = (wins / len(closed_trades)) * 100 if closed_trades else 0.0
+            
+            logger.info(
+                f"[state] 📊 Stats calculated: "
+                f"Total PnL: {total_pnl:.2f} руб, "
+                f"Win rate: {win_rate:.1f}%, "
+                f"Trades: {len(closed_trades)} (W: {wins}, L: {losses})"
+            )
             
             return {
                 "total_pnl": total_pnl,

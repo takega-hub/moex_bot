@@ -182,6 +182,7 @@ class TelegramBot:
         
         # Account Info
         wallet_balance = 0.0
+        available_balance = 0.0  # Initialize - will be set from API
         open_positions = []
         total_margin = 0.0
         
@@ -200,6 +201,8 @@ class TelegramBot:
                         rub_coin = next((c for c in wallet if c.get("coin") == "RUB"), None)
                         if rub_coin:
                             wallet_balance = safe_float(rub_coin.get("walletBalance"), 0)
+                            # Use availableBalance from API directly - exchange knows best
+                            available_balance = safe_float(rub_coin.get("availableBalance"), wallet_balance)
             except asyncio.TimeoutError:
                 logger.error("Timeout getting balance in show_status (30s exceeded)")
             except Exception as e:
@@ -295,14 +298,17 @@ class TelegramBot:
             except Exception as e:
                 logger.error(f"Error getting positions: {e}", exc_info=True)
         
-        # Доступный баланс
-        available = wallet_balance - total_margin
-        if available < 0:
-            available = 0.0
+        # Доступный баланс - используем availableBalance из API напрямую
+        # Exchange already accounts for all frozen margin, variation margin, fees, etc.
+        if available_balance == 0.0 and wallet_balance > 0:
+            # Fallback: if API didn't provide availableBalance, calculate it
+            available_balance = wallet_balance - total_margin
+            if available_balance < 0:
+                available_balance = 0.0
         
         if wallet_balance > 0:
             status_text += f"💰 ACCOUNT INFO:\n"
-            status_text += f"Баланс: {wallet_balance:.2f} руб | Доступно: {available:.2f} руб\n\n"
+            status_text += f"Баланс: {wallet_balance:.2f} руб | Доступно: {available_balance:.2f} руб\n\n"
         
         if open_positions:
             status_text += "📊 OPEN POSITIONS:\n"
@@ -419,7 +425,9 @@ class TelegramBot:
                 await self.toggle_strategy_setting(query, setting_name)
             elif query.data.startswith("toggle_"):
                 ticker = query.data.replace("toggle_", "")
-                logger.info(f"Toggling instrument {ticker}...")
+                logger.info(f"🔄 Toggling instrument {ticker}...")
+                logger.info(f"   Current active instruments before toggle: {self.state.active_instruments}")
+                
                 try:
                     # Выполняем toggle с таймаутом (5 секунд должно быть достаточно для простой операции)
                     res = await asyncio.wait_for(
@@ -429,20 +437,37 @@ class TelegramBot:
                         ),
                         timeout=5.0
                     )
-                    logger.info(f"Toggle instrument {ticker} completed: {res}")
+                    logger.info(f"✅ Toggle instrument {ticker} completed: {res}")
+                    logger.info(f"   Active instruments after toggle: {self.state.active_instruments}")
+                    
+                    # Проверяем, что файл действительно обновился
+                    if self.state.state_file.exists():
+                        import json
+                        try:
+                            with open(self.state.state_file, 'r', encoding='utf-8') as f:
+                                saved_data = json.load(f)
+                                saved_instruments = saved_data.get("active_instruments", [])
+                                logger.info(f"   Verified: Saved active instruments in file: {saved_instruments}")
+                                if saved_instruments != self.state.active_instruments:
+                                    logger.warning(f"   ⚠️ Mismatch! Memory: {self.state.active_instruments}, File: {saved_instruments}")
+                        except Exception as e:
+                            logger.error(f"   ❌ Error verifying saved state: {e}")
+                    else:
+                        logger.error(f"   ❌ State file {self.state.state_file} does not exist!")
+                        
                 except asyncio.TimeoutError:
-                    logger.error(f"Timeout toggling instrument {ticker} (5s exceeded)")
+                    logger.error(f"❌ Timeout toggling instrument {ticker} (5s exceeded)")
                     await query.answer("❌ Таймаут при переключении инструмента. Попробуйте еще раз.", show_alert=True)
                     return
                 except Exception as e:
-                    logger.error(f"Error toggling instrument {ticker}: {e}", exc_info=True)
+                    logger.error(f"❌ Error toggling instrument {ticker}: {e}", exc_info=True)
                     await query.answer(f"❌ Ошибка при переключении: {str(e)[:100]}", show_alert=True)
                     return
                 
                 if res is None:
                     await query.answer("⚠️ Достигнут лимит в 5 инструментов!", show_alert=True)
                 
-                logger.info(f"Showing instruments settings after toggle {ticker}...")
+                logger.info(f"📋 Showing instruments settings after toggle {ticker}...")
                 await self.show_instruments_settings(query)
             elif query.data == "add_ticker":
                 user_id = query.from_user.id
@@ -1844,6 +1869,7 @@ class TelegramBot:
         
         # Баланс
         wallet_balance = 0.0
+        available_balance = 0.0  # Initialize - will be set from API
         if self.tinkoff:
             try:
                 # Добавляем таймаут для получения баланса (30 секунд)
@@ -1904,9 +1930,13 @@ class TelegramBot:
             except Exception as e:
                 logger.error(f"Error getting positions: {e}")
         
-        available = wallet_balance - total_margin
-        if available < 0:
-            available = 0.0
+        # Доступный баланс - используем availableBalance из API напрямую
+        # Exchange already accounts for all frozen margin, variation margin, fees, etc.
+        if available_balance == 0.0 and wallet_balance > 0:
+            # Fallback: if API didn't provide availableBalance, calculate it
+            available_balance = wallet_balance - total_margin
+            if available_balance < 0:
+                available_balance = 0.0
         
         if wallet_balance > 0:
             stats = self.state.get_stats()
@@ -1914,7 +1944,7 @@ class TelegramBot:
             
             text += "💰 БАЛАНС\n"
             text += f"Текущий: {wallet_balance:.2f} руб ({total_pnl_pct:+.2f}%)\n"
-            text += f"Доступно: {available:.2f} руб\n"
+            text += f"Доступно: {available_balance:.2f} руб\n"
             text += f"В позициях: {total_margin:.2f} руб\n\n"
         
         text += f"📈 ОТКРЫТЫЕ ПОЗИЦИИ ({open_count})\n"
