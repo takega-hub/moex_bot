@@ -256,16 +256,48 @@ class TelegramBot:
                         entry_price = safe_float(exchange_pos.get("average_price"), 0)
                         current_price = safe_float(exchange_pos.get("current_price"), 0)
                         
-                        # Рассчитываем PnL
+                        # Get lot size for accurate calculations
+                        lot_size = 1.0
+                        try:
+                            lot_size = await asyncio.wait_for(
+                                asyncio.to_thread(self.tinkoff.get_qty_step, figi),
+                                timeout=10.0
+                            )
+                            if lot_size <= 0:
+                                lot_size = 1.0
+                        except Exception as e:
+                            logger.debug(f"Error getting lot size for {ticker}: {e}, using default 1.0")
+                            lot_size = 1.0
+                        
+                        # Рассчитываем PnL с учетом размера лота
+                        abs_quantity = abs(quantity)
                         if side == "Buy":
-                            pnl_rub = (current_price - entry_price) * abs(quantity)
+                            pnl_rub = (current_price - entry_price) * abs_quantity * lot_size
                             pnl_pct = ((current_price - entry_price) / entry_price * 100) if entry_price > 0 else 0
                         else:  # Sell (SHORT)
-                            pnl_rub = (entry_price - current_price) * abs(quantity)
+                            pnl_rub = (entry_price - current_price) * abs_quantity * lot_size
                             pnl_pct = ((entry_price - current_price) / entry_price * 100) if entry_price > 0 else 0
                         
-                        # Маржа (упрощенно, 12% от стоимости позиции)
-                        margin = entry_price * abs(quantity) * 0.12
+                        # Маржа: используем реальное гарантийное обеспечение из API, если доступно
+                        # Иначе рассчитываем как fallback
+                        margin = None
+                        if "current_margin" in exchange_pos:
+                            margin = safe_float(exchange_pos.get("current_margin"), 0)
+                        elif "initial_margin" in exchange_pos:
+                            margin = safe_float(exchange_pos.get("initial_margin"), 0)
+                        elif "blocked" in exchange_pos:
+                            margin = safe_float(exchange_pos.get("blocked"), 0)
+                        
+                        # Fallback: расчетная маржа, если API не вернул реальную
+                        if margin is None or margin == 0:
+                            position_value = entry_price * abs_quantity * lot_size
+                            margin_rate = 0.12  # 12% margin rate for futures
+                            margin = position_value * margin_rate
+                        
+                        # Получаем вариационную маржу из API, если доступна
+                        variation_margin = None
+                        if "expected_yield" in exchange_pos:
+                            variation_margin = safe_float(exchange_pos.get("expected_yield"), 0)
                         
                         open_positions.append({
                             "ticker": ticker,
@@ -275,7 +307,9 @@ class TelegramBot:
                             "current": current_price,
                             "pnl": pnl_rub,
                             "pnl_pct": pnl_pct,
-                            "margin": margin
+                            "margin": margin,
+                            "variation_margin": variation_margin,  # Вариационная маржа (текущий PnL)
+                            "lot_size": lot_size
                         })
                         total_margin += margin
                         continue  # Позиция уже добавлена, пропускаем проверку локального состояния
@@ -316,7 +350,11 @@ class TelegramBot:
                 side_emoji = "📈" if pos["side"] == "Buy" else "📉"
                 pnl_sign = "+" if pos["pnl"] >= 0 else ""
                 status_text += f"{side_emoji} {pos['ticker']} | {pos['side']}\n"
-                status_text += f"   Лотов: {pos['quantity']:.0f} | Маржа: {pos['margin']:.2f} руб\n"
+                status_text += f"   Лотов: {pos['quantity']:.0f} (лот: {pos.get('lot_size', 1.0):.0f})\n"
+                status_text += f"   💰 Гарантийное обеспечение: {pos['margin']:.2f} руб\n"
+                if pos.get('variation_margin') is not None:
+                    vm_sign = "+" if pos['variation_margin'] >= 0 else ""
+                    status_text += f"   📈 Вариационная маржа: {vm_sign}{pos['variation_margin']:.2f} руб\n"
                 status_text += f"   Вход: {pos['entry']:.2f} руб | Тек: {pos['current']:.2f} руб\n"
                 status_text += f"   PnL: {pnl_sign}{pos['pnl']:.2f} руб ({pnl_sign}{pos['pnl_pct']:.2f}%)\n\n"
         else:
@@ -1885,6 +1923,8 @@ class TelegramBot:
                         rub_coin = next((c for c in wallet if c.get("coin") == "RUB"), None)
                         if rub_coin:
                             wallet_balance = safe_float(rub_coin.get("walletBalance"), 0)
+                            # Use availableBalance from API directly - exchange knows best
+                            available_balance = safe_float(rub_coin.get("availableBalance"), wallet_balance)
             except asyncio.TimeoutError:
                 logger.error("Timeout getting balance in dashboard (30s exceeded)")
             except Exception as e:
@@ -1923,9 +1963,39 @@ class TelegramBot:
                                 open_count += 1
                                 entry_price = safe_float(p.get("average_price"), 0)
                                 current_price = safe_float(p.get("current_price"), 0)
-                                pnl_rub = (current_price - entry_price) * quantity * 1.0
+                                
+                                # Get lot size for accurate calculations
+                                lot_size = 1.0
+                                try:
+                                    lot_size = await asyncio.wait_for(
+                                        asyncio.to_thread(self.tinkoff.get_qty_step, figi),
+                                        timeout=10.0
+                                    )
+                                    if lot_size <= 0:
+                                        lot_size = 1.0
+                                except Exception as e:
+                                    logger.debug(f"Error getting lot size for {ticker} in dashboard: {e}, using default 1.0")
+                                    lot_size = 1.0
+                                
+                                # PnL с учетом размера лота
+                                pnl_rub = (current_price - entry_price) * quantity * lot_size
                                 total_pnl += pnl_rub
-                                margin = entry_price * quantity * 0.12
+                                
+                                # Маржа: используем реальное гарантийное обеспечение из API, если доступно
+                                margin = None
+                                if "current_margin" in p:
+                                    margin = safe_float(p.get("current_margin"), 0)
+                                elif "initial_margin" in p:
+                                    margin = safe_float(p.get("initial_margin"), 0)
+                                elif "blocked" in p:
+                                    margin = safe_float(p.get("blocked"), 0)
+                                
+                                # Fallback: расчетная маржа, если API не вернул реальную
+                                if margin is None or margin == 0:
+                                    position_value = entry_price * quantity * lot_size
+                                    margin_rate = 0.12  # 12% margin rate for futures
+                                    margin = position_value * margin_rate
+                                
                                 total_margin += margin
             except Exception as e:
                 logger.error(f"Error getting positions: {e}")
@@ -1941,6 +2011,15 @@ class TelegramBot:
         if wallet_balance > 0:
             stats = self.state.get_stats()
             total_pnl_pct = (stats['total_pnl'] / wallet_balance * 100) if wallet_balance > 0 else 0
+            
+            # Информация о распределении депозита
+            text += f"💰 БАЛАНС:\n"
+            text += f"Всего: {wallet_balance:.2f} руб\n"
+            text += f"Доступно: {available_balance:.2f} руб\n"
+            if total_margin > 0:
+                margin_pct = (total_margin / wallet_balance * 100) if wallet_balance > 0 else 0
+                text += f"В позициях (маржа): {total_margin:.2f} руб ({margin_pct:.1f}%)\n"
+            text += "\n"
             
             text += "💰 БАЛАНС\n"
             text += f"Текущий: {wallet_balance:.2f} руб ({total_pnl_pct:+.2f}%)\n"

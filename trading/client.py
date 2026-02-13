@@ -396,12 +396,38 @@ class TinkoffClient:
                 positions = []
                 for position in response.positions:
                     if figi is None or position.figi == figi:
-                        positions.append({
+                        pos_data = {
                             "figi": position.figi,
                             "quantity": float(position.quantity.units) + float(position.quantity.nano) / 1e9,
                             "average_price": float(position.average_position_price.units) + float(position.average_position_price.nano) / 1e9,
                             "current_price": float(position.current_price.units) + float(position.current_price.nano) / 1e9,
-                        })
+                        }
+                        
+                        # Добавляем информацию о гарантийном обеспечении (марже), если доступна
+                        # Для фьючерсов это важная информация для понимания распределения депозита
+                        if hasattr(position, 'initial_margin'):
+                            initial_margin = position.initial_margin
+                            pos_data["initial_margin"] = float(initial_margin.units) + float(initial_margin.nano) / 1e9
+                        
+                        if hasattr(position, 'current_margin'):
+                            current_margin = position.current_margin
+                            pos_data["current_margin"] = float(current_margin.units) + float(current_margin.nano) / 1e9
+                        
+                        if hasattr(position, 'blocked'):
+                            blocked = position.blocked
+                            pos_data["blocked"] = float(blocked.units) + float(blocked.nano) / 1e9
+                        
+                        # Вариационная маржа (текущий PnL по позиции)
+                        if hasattr(position, 'expected_yield'):
+                            expected_yield = position.expected_yield
+                            pos_data["expected_yield"] = float(expected_yield.units) + float(expected_yield.nano) / 1e9
+                        
+                        # Стоимость позиции
+                        if hasattr(position, 'current_nkd'):
+                            current_nkd = position.current_nkd
+                            pos_data["current_nkd"] = float(current_nkd.units) + float(current_nkd.nano) / 1e9
+                        
+                        positions.append(pos_data)
                 
                 return {
                     "retCode": 0,
