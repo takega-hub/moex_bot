@@ -209,6 +209,7 @@ class TelegramBot:
                 logger.error(f"Error getting balance: {e}")
             
             # Open Positions
+            total_blocked_margin_from_api = 0.0  # Общая замороженная маржа из API
             try:
                 # Сначала синхронизируем позиции с биржей (если есть trading_loop)
                 if hasattr(self, 'trading_loop') and self.trading_loop:
@@ -216,6 +217,20 @@ class TelegramBot:
                         await self.trading_loop.sync_positions_with_exchange()
                     except Exception as e:
                         logger.debug(f"Error syncing positions in status: {e}")
+                
+                # Получаем общую замороженную маржу из API (из валютной позиции)
+                try:
+                    all_pos_info = await asyncio.wait_for(
+                        asyncio.to_thread(self.tinkoff.get_position_info),
+                        timeout=30.0
+                    )
+                    if all_pos_info and all_pos_info.get("retCode") == 0:
+                        result = all_pos_info.get("result", {})
+                        total_blocked_margin_from_api = result.get("total_blocked_margin", 0.0)
+                        if total_blocked_margin_from_api > 0:
+                            logger.debug(f"Got total blocked margin from API: {total_blocked_margin_from_api:.2f} руб")
+                except Exception as e:
+                    logger.debug(f"Error getting total blocked margin: {e}")
                 
                 # Проверяем позиции на бирже ПЕРВОЙ (источник истины)
                 for ticker in self.state.active_instruments:
@@ -279,7 +294,7 @@ class TelegramBot:
                             pnl_pct = ((entry_price - current_price) / entry_price * 100) if entry_price > 0 else 0
                         
                         # Маржа: используем реальное гарантийное обеспечение из API, если доступно
-                        # Иначе рассчитываем как fallback
+                        # Иначе используем справочник реальных коэффициентов маржи
                         margin = None
                         margin_source = "none"
                         if "current_margin" in exchange_pos:
@@ -295,12 +310,16 @@ class TelegramBot:
                             if margin > 0:
                                 margin_source = "blocked"
                         
-                        # Fallback: расчетная маржа, если API не вернул реальную
+                        # Fallback: используем справочник реальных коэффициентов маржи
                         if margin is None or margin == 0:
-                            position_value = entry_price * abs_quantity * lot_size
-                            margin_rate = 0.12  # 12% margin rate for futures
-                            margin = position_value * margin_rate
-                            margin_source = "calculated"
+                            from bot.margin_rates import get_margin_for_position
+                            margin = get_margin_for_position(
+                                ticker=ticker,
+                                quantity=abs_quantity,
+                                entry_price=entry_price,
+                                lot_size=lot_size
+                            )
+                            margin_source = "margin_rates_dict"
                         
                         logger.debug(
                             f"[show_status] Position {ticker} margin: {margin:.2f} руб "
@@ -351,47 +370,29 @@ class TelegramBot:
             except Exception as e:
                 logger.error(f"Error getting positions: {e}", exc_info=True)
         
-        # Доступный баланс - вычитаем реальную маржу из позиций
-        # Если API вернул availableBalance, который меньше walletBalance, используем его
-        # (это означает, что API уже учел замороженную маржу)
-        # Если API вернул availableBalance равный walletBalance, но есть позиции,
-        # значит API не учел маржу, и нужно вычесть её вручную
-        api_available = available_balance if available_balance > 0 else wallet_balance
-        
-        if open_positions and total_margin > 0:
-            # Если API вернул баланс равный wallet_balance (не учел маржу)
-            if api_available == wallet_balance:
-                # Вычитаем реальную маржу из позиций
-                calculated_available = wallet_balance - total_margin
-                if calculated_available < 0:
-                    calculated_available = 0.0
-                available_balance = calculated_available
-                logger.info(
-                    f"[show_status] API didn't account for margin. "
-                    f"Using calculated: wallet={wallet_balance:.2f}, "
-                    f"margin={total_margin:.2f}, available={available_balance:.2f}"
-                )
-            else:
-                # API уже учел маржу, используем разницу как реальную маржу
-                margin_from_api = wallet_balance - api_available
-                if margin_from_api > total_margin * 1.5:  # API маржа намного больше расчетной
-                    # Используем маржу из API (более точную) и обновляем total_margin
-                    logger.info(
-                        f"[show_status] API margin ({margin_from_api:.2f}) is much larger than "
-                        f"calculated ({total_margin:.2f}). Using API margin for available balance."
-                    )
-                    # Обновляем маржу в позициях для отображения
-                    if open_positions:
-                        # Распределяем маржу из API пропорционально между позициями
-                        for pos in open_positions:
-                            if pos.get('margin', 0) > 0:
-                                # Увеличиваем маржу пропорционально
-                                pos['margin'] = pos['margin'] * (margin_from_api / total_margin)
-                    total_margin = margin_from_api
-                    available_balance = api_available
-                else:
-                    # Маржи примерно совпадают, используем API
-                    available_balance = api_available
+        # Доступный баланс - используем total_blocked_margin из API (из валютной позиции)
+        # Это самый точный способ получить реальную замороженную маржу
+        if total_blocked_margin_from_api > 0:
+            # Используем замороженную маржу из API
+            available_balance = wallet_balance - total_blocked_margin_from_api
+            if available_balance < 0:
+                available_balance = 0.0
+            logger.debug(
+                f"[show_status] Using API blocked margin: "
+                f"wallet={wallet_balance:.2f}, blocked={total_blocked_margin_from_api:.2f}, "
+                f"available={available_balance:.2f}"
+            )
+        elif open_positions and total_margin > 0:
+            # Fallback: используем расчетную маржу из позиций
+            calculated_available = wallet_balance - total_margin
+            if calculated_available < 0:
+                calculated_available = 0.0
+            available_balance = calculated_available
+            logger.debug(
+                f"[show_status] Using calculated margin: "
+                f"wallet={wallet_balance:.2f}, margin={total_margin:.2f}, "
+                f"available={available_balance:.2f}"
+            )
         elif available_balance == 0.0 and wallet_balance > 0:
             # Если нет позиций, используем баланс как доступный
             available_balance = wallet_balance
@@ -1992,6 +1993,20 @@ class TelegramBot:
         total_margin = 0.0
         if self.tinkoff:
             try:
+                # Получаем общую замороженную маржу из API (из валютной позиции)
+                try:
+                    all_pos_info = await asyncio.wait_for(
+                        asyncio.to_thread(self.tinkoff.get_position_info),
+                        timeout=30.0
+                    )
+                    if all_pos_info and all_pos_info.get("retCode") == 0:
+                        result = all_pos_info.get("result", {})
+                        total_blocked_margin_from_api = result.get("total_blocked_margin", 0.0)
+                        if total_blocked_margin_from_api > 0:
+                            logger.debug(f"Got total blocked margin from API in dashboard: {total_blocked_margin_from_api:.2f} руб")
+                except Exception as e:
+                    logger.debug(f"Error getting total blocked margin in dashboard: {e}")
+                
                 for ticker in self.state.active_instruments:
                     instrument_info = self.storage.get_instrument_by_ticker(ticker)
                     if not instrument_info:
@@ -2046,49 +2061,43 @@ class TelegramBot:
                                 elif "blocked" in p:
                                     margin = safe_float(p.get("blocked"), 0)
                                 
-                                # Fallback: расчетная маржа, если API не вернул реальную
+                                # Fallback: используем справочник реальных коэффициентов маржи
                                 if margin is None or margin == 0:
-                                    position_value = entry_price * quantity * lot_size
-                                    margin_rate = 0.12  # 12% margin rate for futures
-                                    margin = position_value * margin_rate
+                                    from bot.margin_rates import get_margin_for_position
+                                    margin = get_margin_for_position(
+                                        ticker=ticker,
+                                        quantity=quantity,
+                                        entry_price=entry_price,
+                                        lot_size=lot_size
+                                    )
                                 
                                 total_margin += margin
             except Exception as e:
                 logger.error(f"Error getting positions: {e}")
         
-        # Доступный баланс - вычитаем реальную маржу из позиций
-        # Если API вернул availableBalance, который меньше walletBalance, используем его
-        # (это означает, что API уже учел замороженную маржу)
-        # Если API вернул availableBalance равный walletBalance, но есть позиции,
-        # значит API не учел маржу, и нужно вычесть её вручную
-        api_available = available_balance if available_balance > 0 else wallet_balance
-        
-        if open_count > 0 and total_margin > 0:
-            # Если API вернул баланс равный wallet_balance (не учел маржу)
-            if api_available == wallet_balance:
-                # Вычитаем реальную маржу из позиций
-                calculated_available = wallet_balance - total_margin
-                if calculated_available < 0:
-                    calculated_available = 0.0
-                available_balance = calculated_available
-                logger.info(
-                    f"[show_dashboard] API didn't account for margin. "
-                    f"Using calculated: wallet={wallet_balance:.2f}, "
-                    f"margin={total_margin:.2f}, available={available_balance:.2f}"
-                )
-            else:
-                # API уже учел маржу, но проверим, что разница соответствует нашей марже
-                margin_from_api = wallet_balance - api_available
-                if abs(margin_from_api - total_margin) > wallet_balance * 0.05:  # Разница более 5%
-                    # API учел другую маржу, возможно более точную - используем её
-                    logger.info(
-                        f"[show_dashboard] API margin ({margin_from_api:.2f}) differs from "
-                        f"calculated ({total_margin:.2f}). Using API available balance: {api_available:.2f}"
-                    )
-                    available_balance = api_available
-                else:
-                    # Маржи примерно совпадают, используем API
-                    available_balance = api_available
+        # Доступный баланс - используем total_blocked_margin из API (из валютной позиции)
+        # Это самый точный способ получить реальную замороженную маржу
+        if total_blocked_margin_from_api > 0:
+            # Используем замороженную маржу из API
+            available_balance = wallet_balance - total_blocked_margin_from_api
+            if available_balance < 0:
+                available_balance = 0.0
+            logger.debug(
+                f"[show_dashboard] Using API blocked margin: "
+                f"wallet={wallet_balance:.2f}, blocked={total_blocked_margin_from_api:.2f}, "
+                f"available={available_balance:.2f}"
+            )
+        elif open_count > 0 and total_margin > 0:
+            # Fallback: используем расчетную маржу из позиций
+            calculated_available = wallet_balance - total_margin
+            if calculated_available < 0:
+                calculated_available = 0.0
+            available_balance = calculated_available
+            logger.debug(
+                f"[show_dashboard] Using calculated margin: "
+                f"wallet={wallet_balance:.2f}, margin={total_margin:.2f}, "
+                f"available={available_balance:.2f}"
+            )
         elif available_balance == 0.0 and wallet_balance > 0:
             # Если нет позиций, используем баланс как доступный
             available_balance = wallet_balance

@@ -330,6 +330,27 @@ class MultiTimeframeMLStrategy:
                 leverage=leverage,
             )
             
+            # Проверяем, что сигнал не None
+            if signal_15m is None:
+                logger.warning("[MTF Strategy] 15m strategy returned None signal, returning HOLD")
+                return Signal(
+                    action=Action.HOLD,
+                    confidence=0.0,
+                    price=current_price,
+                    take_profit=None,
+                    stop_loss=None,
+                    indicators_info={
+                        "strategy": "MTF_ML",
+                        "mtf_confidence": round(confidence, 4),
+                        "1h_pred": info.get("pred_1h"),
+                        "1h_conf": round(info.get("conf_1h", 0), 4),
+                        "15m_pred": info.get("pred_15m"),
+                        "15m_conf": round(info.get("conf_15m", 0), 4),
+                        "alignment": info.get("alignment"),
+                        "mtf_reason": f"{info.get('reason')}_15m_none",
+                    }
+                )
+            
             # Обновляем информацию о комбинированной стратегии
             if signal_15m.indicators_info:
                 signal_15m.indicators_info["strategy"] = "MTF_ML"

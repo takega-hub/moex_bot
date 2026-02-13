@@ -394,6 +394,8 @@ class TinkoffClient:
                 logger.debug(f"[get_position_info] get_portfolio() completed, found {len(response.positions) if response.positions else 0} positions")
                 
                 positions = []
+                total_blocked_margin = 0.0  # Общая замороженная маржа из валютной позиции
+                
                 for position in response.positions:
                     if figi is None or position.figi == figi:
                         pos_data = {
@@ -402,6 +404,17 @@ class TinkoffClient:
                             "average_price": float(position.average_position_price.units) + float(position.average_position_price.nano) / 1e9,
                             "current_price": float(position.current_price.units) + float(position.current_price.nano) / 1e9,
                         }
+                        
+                        # Для валютной позиции (RUB000UTSTOM) blocked_lots содержит общую замороженную маржу
+                        if position.figi == "RUB000UTSTOM" and hasattr(position, 'blocked_lots'):
+                            try:
+                                blocked_lots = position.blocked_lots
+                                if hasattr(blocked_lots, 'units') and hasattr(blocked_lots, 'nano'):
+                                    total_blocked_margin = float(blocked_lots.units) + float(blocked_lots.nano) / 1e9
+                                    pos_data["blocked_margin"] = total_blocked_margin
+                                    logger.debug(f"Found total blocked margin in currency position: {total_blocked_margin:.2f} руб")
+                            except (AttributeError, TypeError) as e:
+                                logger.debug(f"Error parsing blocked_lots for currency: {e}")
                         
                         # Добавляем информацию о гарантийном обеспечении (марже), если доступна
                         # Для фьючерсов это важная информация для понимания распределения депозита
@@ -451,12 +464,18 @@ class TinkoffClient:
                         
                         positions.append(pos_data)
                 
-                return {
+                result = {
                     "retCode": 0,
                     "result": {
-                        "list": positions
+                        "list": positions,
+                        "total_blocked_margin": total_blocked_margin  # Общая замороженная маржа
                     }
                 }
+                
+                if total_blocked_margin > 0:
+                    logger.debug(f"Total blocked margin from API: {total_blocked_margin:.2f} руб")
+                
+                return result
         except Exception as e:
             logger.error(f"Error getting positions: {e}")
             return {"retCode": -1, "retMsg": str(e), "result": {"list": []}}
