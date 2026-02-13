@@ -713,6 +713,7 @@ class TradingLoop:
                                 if all_pos_info and all_pos_info.get("retCode") == 0:
                                     pos_result = all_pos_info.get("result", {})
                                     total_blocked_margin = pos_result.get("total_blocked_margin", 0.0)
+                                    total_blocked_margin_from_api = total_blocked_margin  # For compatibility
                                     if total_blocked_margin > 0:
                                         # Используем реальную замороженную маржу из API
                                         available_balance = total_balance - total_blocked_margin
@@ -794,21 +795,24 @@ class TradingLoop:
                 real_available = total_balance - total_blocked_margin
                 if real_available < 0:
                     real_available = 0.0
-                # Применяем консервативный коэффициент безопасности (30%)
-                api_available_safe = real_available * 0.30
+                # Если используем blocked_margin из API (надежный источник), используем больше процентов
+                # от реального доступного баланса, т.к. он уже точно учитывает всю замороженную маржу
+                # Применяем 80% от real_available (остальные 20% - запас на вариационную маржу и комиссии)
+                api_available_safe = real_available * 0.80
                 logger.info(
                     f"[{instrument}] 💰 Margin info: Total balance: {total_balance:.2f} руб, "
                     f"Blocked margin (from API): {total_blocked_margin:.2f} руб, "
                     f"Real available: {real_available:.2f} руб, "
-                    f"Available (30%): {api_available_safe:.2f} руб"
+                    f"Available (80%): {api_available_safe:.2f} руб"
                 )
             else:
                 # Fallback: используем API availableBalance с консервативным коэффициентом
-                api_available_safe = available_balance * 0.30
+                # В этом случае API может быть неточным, поэтому используем меньше
+                api_available_safe = available_balance * 0.50
                 logger.info(
                     f"[{instrument}] 💰 Margin info: Total balance: {total_balance:.2f} руб, "
                     f"API available balance: {available_balance:.2f} руб, "
-                    f"API available (30%): {api_available_safe:.2f} руб, "
+                    f"API available (50%): {api_available_safe:.2f} руб, "
                     f"Margin used by other positions (estimated): {total_margin_used:.2f} руб"
                 )
             
@@ -880,10 +884,18 @@ class TradingLoop:
                     # Balance is too small even for 1 lot
                     available_margin = balance
             
-            # Apply safety margin: use only 70% of available margin to account for exchange requirements
+            # Apply safety margin: use only 85% of available margin to account for exchange requirements
             # Exchange may require more margin than calculated due to volatility, fees, variation margin, etc.
-            # More conservative to avoid "Not enough assets" errors
-            safety_factor = 0.70  # Reduced from 0.85 to 0.70 for more safety
+            # If we already used blocked_margin from API (reliable source), we can be less conservative
+            # because real_available already accounts for all frozen margin
+            if total_blocked_margin > 0:
+                # Already used 80% of real_available, apply smaller safety factor (90%)
+                # Total: 0.80 * 0.90 = 0.72 (72% of real available)
+                safety_factor = 0.90
+            else:
+                # Using API availableBalance (less reliable), be more conservative (70%)
+                # Total: 0.50 * 0.70 = 0.35 (35% of API available)
+                safety_factor = 0.70
             available_margin = available_margin * safety_factor
             
             # Check if we have enough margin for at least 1 lot
