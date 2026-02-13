@@ -26,7 +26,7 @@ def collect_data_for_instruments(instruments: list, days_back: int = 180, interv
     Args:
         instruments: List of instrument tickers (e.g., ["VBH6", "SRH6", "GLDRUBF"])
         days_back: Number of days of historical data to collect
-        interval: Candle interval (15min, 1hour, 4hour, day)
+        interval: Candle interval (15min, 1hour, day)
     """
     print("\n" + "="*70)
     print("HISTORICAL DATA COLLECTION")

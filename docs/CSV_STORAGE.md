@@ -63,7 +63,6 @@ timestamp,open,high,low,close,volume
 - `5min` → `5`
 - `15min` → `15`
 - `1hour` → `60`
-- `4hour` → `240`
 - `day` → `1440`
 
 ## Работа с данными

@@ -242,8 +242,6 @@ class DataCollector:
                     from_date += timedelta(minutes=15)
                 elif interval == "1hour":
                     from_date += timedelta(hours=1)
-                elif interval == "4hour":
-                    from_date += timedelta(hours=4)
                 elif interval == "day":
                     from_date += timedelta(days=1)
             else:

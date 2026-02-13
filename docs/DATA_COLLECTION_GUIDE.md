@@ -32,7 +32,7 @@ python collect_historical_data.py VBH6 SRH6 GLDRUBF
 
 ```env
 DATA_COLLECTION_DAYS=180      # Количество дней истории (по умолчанию 180)
-DATA_COLLECTION_INTERVAL=15min # Интервал свечей (15min, 1hour, 4hour, day)
+DATA_COLLECTION_INTERVAL=15min # Интервал свечей (15min, 1hour, day)
 ```
 
 ## Что делает скрипт

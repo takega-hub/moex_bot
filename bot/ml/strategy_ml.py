@@ -218,21 +218,21 @@ class MLStrategy:
                 logger.debug(f"generate_signal: insufficient data - {len(df)} candles, need 60")
                 return None
             
-            # Check if model expects MTF features (1hour, 4hour)
-            # If yes, create them BEFORE prepare_features_for_prediction
+            # Check if model expects MTF features (1hour only, needed for MTF strategy)
+            # MTF strategy uses 1h + 15m models
             higher_timeframes = {}
             if self.feature_names:
                 mtf_timeframes = []
                 for feat_name in self.feature_names:
-                    if "_1hour" in feat_name or "_1h" in feat_name:
+                    feat_lower = feat_name.lower()
+                    # Only create 1hour timeframe (needed for MTF strategy)
+                    if any(pattern in feat_lower for pattern in ["_1hour", "_1h"]):
                         if "1hour" not in mtf_timeframes:
                             mtf_timeframes.append("1hour")
-                    elif "_4hour" in feat_name or "_4h" in feat_name:
-                        if "4hour" not in mtf_timeframes:
-                            mtf_timeframes.append("4hour")
                 
                 # Create MTF timeframes from historical data
                 if mtf_timeframes:
+                    logger.debug(f"Creating MTF timeframes: {mtf_timeframes}")
                     try:
                         # Prepare df for aggregation (need full history)
                         df_full = df.tail(500).copy()  # Use last 500 candles for MTF aggregation
@@ -252,17 +252,23 @@ class MLStrategy:
                             }
                             
                             for tf in mtf_timeframes:
-                                if tf == "1hour":
-                                    df_tf = df_full.resample("60min").agg(ohlcv_agg).dropna()
-                                elif tf == "4hour":
-                                    df_tf = df_full.resample("4H").agg(ohlcv_agg).dropna()
-                                else:
-                                    continue
-                                
-                                if not df_tf.empty:
-                                    higher_timeframes[tf] = df_tf
+                                try:
+                                    if tf == "1hour":
+                                        df_tf = df_full.resample("60min").agg(ohlcv_agg).dropna()
+                                    else:
+                                        continue
+                                    
+                                    if not df_tf.empty:
+                                        higher_timeframes[tf] = df_tf
+                                        logger.debug(f"Created {tf} timeframe: {len(df_tf)} candles")
+                                    else:
+                                        logger.warning(f"Empty {tf} timeframe after aggregation")
+                                except Exception as e:
+                                    logger.warning(f"Error creating {tf} timeframe: {e}")
                     except Exception as e:
-                        logger.debug(f"Error creating MTF timeframes: {e}")
+                        logger.warning(f"Error creating MTF timeframes: {e}")
+                else:
+                    logger.debug("No MTF timeframes required by model")
             
             # Prepare features (this creates base features for 15m timeframe)
             # We'll add MTF features after this
@@ -297,7 +303,10 @@ class MLStrategy:
                 # Ensure we have all required features
                 missing_features = set(self.feature_names) - set(features_df.columns)
                 if missing_features:
+                    # Log missing features at WARNING level
                     logger.warning(f"Missing features: {missing_features}. Adding zeros...")
+                    
+                    # Fill all missing features with zeros
                     for feat in missing_features:
                         features_df[feat] = 0.0
                 

@@ -1717,7 +1717,7 @@ class TelegramBot:
                 f"✏️ РЕДАКТИРОВАНИЕ: Таймфрейм\n\n"
                 f"Текущее значение: {current_value}\n\n"
                 f"Введите новый таймфрейм:\n"
-                f"15min, 1hour, 4hour, day",
+                f"15min, 1hour, day",
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("❌ Отмена", callback_data="settings_strategy")]
                 ])
@@ -1747,11 +1747,11 @@ class TelegramBot:
         """Обрабатывает ввод настройки стратегии."""
         try:
             if setting_name == "timeframe":
-                valid_timeframes = ["15min", "1hour", "4hour", "day"]
+                valid_timeframes = ["15min", "1hour", "day"]
                 if text.strip() in valid_timeframes:
                     self.settings.timeframe = text.strip()
                 else:
-                    await update.message.reply_text("❌ Неверный таймфрейм. Используйте: 15min, 1hour, 4hour, day")
+                    await update.message.reply_text("❌ Неверный таймфрейм. Используйте: 15min, 1hour, day")
                     return
             elif setting_name == "kline_limit":
                 value = int(text)

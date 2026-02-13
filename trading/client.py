@@ -66,7 +66,6 @@ class TinkoffClient:
             "5min": CandleInterval.CANDLE_INTERVAL_5_MIN,
             "15min": CandleInterval.CANDLE_INTERVAL_15_MIN,
             "1hour": CandleInterval.CANDLE_INTERVAL_HOUR,
-            "4hour": CandleInterval.CANDLE_INTERVAL_4_HOUR,
             "day": CandleInterval.CANDLE_INTERVAL_DAY,
         }
         return interval_map.get(interval.lower(), CandleInterval.CANDLE_INTERVAL_1_MIN)
@@ -85,7 +84,7 @@ class TinkoffClient:
             figi: Instrument FIGI
             from_date: Start date
             to_date: End date
-            interval: Candle interval ("1min", "5min", "15min", "1hour", "4hour", "day")
+            interval: Candle interval ("1min", "5min", "15min", "1hour", "day")
         
         Returns:
             List of candle dictionaries with keys: time, open, high, low, close, volume
@@ -329,7 +328,6 @@ class TinkoffClient:
                 "5min": timedelta(minutes=5),
                 "15min": timedelta(minutes=15),
                 "1hour": timedelta(hours=1),
-                "4hour": timedelta(hours=4),
                 "day": timedelta(days=1),
             }
             delta = interval_map.get(interval.lower(), timedelta(minutes=1))

@@ -57,7 +57,7 @@ ALLOWED_USER_ID=your_telegram_user_id
 
 # Trading settings
 TRADING_INSTRUMENTS=VBH6,SRH6,GLDRUBF  # Список инструментов через запятую
-TIMEFRAME=15min  # Таймфрейм: 1min, 5min, 15min, 1hour, 4hour, day
+TIMEFRAME=15min  # Таймфрейм: 1min, 5min, 15min, 1hour, day
 
 # ML Strategy
 ML_CONFIDENCE_THRESHOLD=0.35

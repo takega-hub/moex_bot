@@ -55,9 +55,9 @@ def main():
         """
     )
     parser.add_argument("--ticker", type=str, help="Тикер инструмента для обучения (если не указано, обучаются все из конфига)")
-    parser.add_argument("--mtf", action="store_true", help="Использовать MTF фичи (1h, 4h)")
+    parser.add_argument("--mtf", action="store_true", help="Использовать MTF фичи (1h)")
     parser.add_argument("--no-mtf", action="store_true", help="НЕ использовать MTF фичи (только 15min)")
-    parser.add_argument("--interval", type=str, default="15min", choices=["15min", "1hour", "4hour", "day"],
+    parser.add_argument("--interval", type=str, default="15min", choices=["15min", "1hour", "day"],
                        help="Базовый таймфрейм для обучения (по умолчанию: 15min)")
     parser.add_argument("--skip-update", action="store_true", help="Пропустить обновление исторических данных перед обучением")
     parser.add_argument("--update-days", type=int, default=180, help="Количество дней исторических данных для обновления (по умолчанию: 180)")
@@ -117,7 +117,7 @@ def main():
             # Определяем интервалы для обновления
             intervals_to_update = [interval]
             if ml_mtf_enabled:
-                intervals_to_update.extend(["1hour", "4hour"])
+                intervals_to_update.extend(["1hour"])
             
             safe_print(f"Обновление данных для интервалов: {', '.join(intervals_to_update)}")
             safe_print(f"Период: {args.update_days} дней\n")
@@ -240,8 +240,8 @@ def main():
             # Добавляем MTF фичи, если нужно
             if ml_mtf_enabled:
                 higher_timeframes = {}
-                # Загружаем данные для высших таймфреймов
-                for htf_interval in ["1hour", "4hour"]:
+                # Загружаем данные для высших таймфреймов (только 1hour для MTF стратегии)
+                for htf_interval in ["1hour"]:
                     htf_df = storage.get_candles(
                         figi=figi,
                         interval=htf_interval,

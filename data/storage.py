@@ -52,7 +52,6 @@ class DataStorage:
             "5min": "5",
             "15min": "15",
             "1hour": "60",
-            "4hour": "240",
             "day": "1440",
         }
         return interval_map.get(interval.lower(), interval.replace("min", "").replace("hour", ""))
