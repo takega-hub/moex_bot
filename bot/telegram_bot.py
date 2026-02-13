@@ -312,6 +312,11 @@ class TelegramBot:
                             "lot_size": lot_size
                         })
                         total_margin += margin
+                        
+                        logger.debug(
+                            f"[show_status] Position {ticker}: margin={margin:.2f}, "
+                            f"total_margin={total_margin:.2f}"
+                        )
                         continue  # Позиция уже добавлена, пропускаем проверку локального состояния
                     
                     # Если на бирже позиции нет, но в локальном состоянии есть - синхронизируем
@@ -332,13 +337,28 @@ class TelegramBot:
             except Exception as e:
                 logger.error(f"Error getting positions: {e}", exc_info=True)
         
-        # Доступный баланс - используем availableBalance из API напрямую
-        # Exchange already accounts for all frozen margin, variation margin, fees, etc.
-        if available_balance == 0.0 and wallet_balance > 0:
-            # Fallback: if API didn't provide availableBalance, calculate it
-            available_balance = wallet_balance - total_margin
-            if available_balance < 0:
-                available_balance = 0.0
+        # Доступный баланс - вычитаем реальную маржу из позиций
+        # API может возвращать availableBalance, который не учитывает замороженную маржу правильно
+        # Поэтому рассчитываем вручную: баланс - маржа в позициях
+        if total_margin > 0:
+            # Используем расчетный доступный баланс: баланс минус маржа
+            calculated_available = wallet_balance - total_margin
+            if calculated_available < 0:
+                calculated_available = 0.0
+            
+            # Используем расчетный баланс, если он отличается от API более чем на 1%
+            # или если API вернул баланс равный wallet_balance (что неправильно)
+            api_available = available_balance if available_balance > 0 else wallet_balance
+            if abs(calculated_available - api_available) > wallet_balance * 0.01 or api_available == wallet_balance:
+                available_balance = calculated_available
+                logger.debug(
+                    f"[show_status] Using calculated available balance: "
+                    f"wallet={wallet_balance:.2f}, margin={total_margin:.2f}, "
+                    f"available={available_balance:.2f} (API returned {api_available:.2f})"
+                )
+        elif available_balance == 0.0 and wallet_balance > 0:
+            # Если нет позиций, используем баланс как доступный
+            available_balance = wallet_balance
         
         if wallet_balance > 0:
             status_text += f"💰 ACCOUNT INFO:\n"
@@ -2000,13 +2020,28 @@ class TelegramBot:
             except Exception as e:
                 logger.error(f"Error getting positions: {e}")
         
-        # Доступный баланс - используем availableBalance из API напрямую
-        # Exchange already accounts for all frozen margin, variation margin, fees, etc.
-        if available_balance == 0.0 and wallet_balance > 0:
-            # Fallback: if API didn't provide availableBalance, calculate it
-            available_balance = wallet_balance - total_margin
-            if available_balance < 0:
-                available_balance = 0.0
+        # Доступный баланс - вычитаем реальную маржу из позиций
+        # API может возвращать availableBalance, который не учитывает замороженную маржу правильно
+        # Поэтому рассчитываем вручную: баланс - маржа в позициях
+        if total_margin > 0:
+            # Используем расчетный доступный баланс: баланс минус маржа
+            calculated_available = wallet_balance - total_margin
+            if calculated_available < 0:
+                calculated_available = 0.0
+            
+            # Используем расчетный баланс, если он отличается от API более чем на 1%
+            # или если API вернул баланс равный wallet_balance (что неправильно)
+            api_available = available_balance if available_balance > 0 else wallet_balance
+            if abs(calculated_available - api_available) > wallet_balance * 0.01 or api_available == wallet_balance:
+                available_balance = calculated_available
+                logger.debug(
+                    f"[show_dashboard] Using calculated available balance: "
+                    f"wallet={wallet_balance:.2f}, margin={total_margin:.2f}, "
+                    f"available={available_balance:.2f} (API returned {api_available:.2f})"
+                )
+        elif available_balance == 0.0 and wallet_balance > 0:
+            # Если нет позиций, используем баланс как доступный
+            available_balance = wallet_balance
         
         if wallet_balance > 0:
             stats = self.state.get_stats()
