@@ -689,6 +689,7 @@ class TradingLoop:
             
             total_balance = 0.0
             available_balance = 0.0
+            total_blocked_margin = 0.0  # Общая замороженная маржа из API
             
             if balance_info and balance_info.get("retCode") == 0:
                 result = balance_info.get("result", {})
@@ -700,8 +701,34 @@ class TradingLoop:
                         rub_coin = next((c for c in coin_list if c.get("coin") == "RUB"), None)
                         if rub_coin:
                             total_balance = float(rub_coin.get("walletBalance", 0))
-                            # Use available balance if available, otherwise use total balance
-                            available_balance = float(rub_coin.get("availableBalance", total_balance))
+                            # API availableBalance часто равен walletBalance, не учитывает маржу
+                            api_available = float(rub_coin.get("availableBalance", total_balance))
+                            
+                            # Получаем реальную замороженную маржу из валютной позиции
+                            try:
+                                all_pos_info = await asyncio.wait_for(
+                                    asyncio.to_thread(self.tinkoff.get_position_info),
+                                    timeout=10.0
+                                )
+                                if all_pos_info and all_pos_info.get("retCode") == 0:
+                                    pos_result = all_pos_info.get("result", {})
+                                    total_blocked_margin = pos_result.get("total_blocked_margin", 0.0)
+                                    if total_blocked_margin > 0:
+                                        # Используем реальную замороженную маржу из API
+                                        available_balance = total_balance - total_blocked_margin
+                                        if available_balance < 0:
+                                            available_balance = 0.0
+                                        logger.debug(
+                                            f"[{instrument}] Real available balance from blocked_lots: "
+                                            f"balance={total_balance:.2f}, blocked={total_blocked_margin:.2f}, "
+                                            f"available={available_balance:.2f}"
+                                        )
+                                    else:
+                                        # Fallback: используем API availableBalance
+                                        available_balance = api_available
+                            except Exception as e:
+                                logger.debug(f"[{instrument}] Error getting blocked margin: {e}, using API available")
+                                available_balance = api_available
             
             # Calculate total margin used by all open positions
             # Use same margin rate as for new positions (15% for safety)
@@ -759,22 +786,33 @@ class TradingLoop:
             except Exception as e:
                 logger.warning(f"[{instrument}] Error calculating total margin used: {e}")
             
-            # Use availableBalance from API directly - exchange knows best what's available
-            # Don't try to calculate used margin ourselves - exchange already accounts for it
-            # Apply conservative safety factor (30%) to account for exchange's internal calculations
-            # Exchange may have additional requirements (variation margin, fees, etc.)
-            api_available_safe = available_balance * 0.30  # Use only 30% of API available balance (more conservative)
+            # Используем реальный доступный баланс с учетом blocked_lots из API
+            # API availableBalance часто равен walletBalance и не учитывает замороженную маржу
+            # Поэтому используем расчет: balance - blocked_margin
+            if total_blocked_margin > 0:
+                # Используем реальный доступный баланс с учетом замороженной маржи
+                real_available = total_balance - total_blocked_margin
+                if real_available < 0:
+                    real_available = 0.0
+                # Применяем консервативный коэффициент безопасности (30%)
+                api_available_safe = real_available * 0.30
+                logger.info(
+                    f"[{instrument}] 💰 Margin info: Total balance: {total_balance:.2f} руб, "
+                    f"Blocked margin (from API): {total_blocked_margin:.2f} руб, "
+                    f"Real available: {real_available:.2f} руб, "
+                    f"Available (30%): {api_available_safe:.2f} руб"
+                )
+            else:
+                # Fallback: используем API availableBalance с консервативным коэффициентом
+                api_available_safe = available_balance * 0.30
+                logger.info(
+                    f"[{instrument}] 💰 Margin info: Total balance: {total_balance:.2f} руб, "
+                    f"API available balance: {available_balance:.2f} руб, "
+                    f"API available (30%): {api_available_safe:.2f} руб, "
+                    f"Margin used by other positions (estimated): {total_margin_used:.2f} руб"
+                )
             
-            # Log both values for comparison
-            logger.info(
-                f"[{instrument}] 💰 Margin info: "
-                f"Total balance: {total_balance:.2f} руб, "
-                f"API available balance: {available_balance:.2f} руб, "
-                f"API available (30%): {api_available_safe:.2f} руб, "
-                f"Margin used by other positions (estimated): {total_margin_used:.2f} руб"
-            )
-            
-            # Use API available balance with safety factor - trust the exchange
+            # Use calculated available balance with safety factor
             balance = api_available_safe
             
             if balance <= 0:
@@ -786,16 +824,33 @@ class TradingLoop:
                 return
             
             # Calculate position size
-            # For Tinkoff futures, margin is typically ~12% of position value
-            # Use 25% for safety margin (very conservative) - exchange may require more due to volatility
-            # Increased from 20% to 25% to account for variation margin and exchange requirements
-            margin_rate = 0.25  # 25% margin requirement (very conservative, actual is ~12%)
+            # Используем справочник реальных коэффициентов маржи
+            from bot.margin_rates import get_margin_for_position
             
             if lot_size <= 0:
                 lot_size = 1.0
             
-            position_value_per_lot = current_price * lot_size
-            margin_per_lot = position_value_per_lot * margin_rate
+            # Получаем маржу за 1 лот из справочника
+            margin_per_lot = get_margin_for_position(
+                ticker=instrument,
+                quantity=1.0,
+                entry_price=current_price,
+                lot_size=lot_size
+            )
+            
+            # Если справочник вернул 0 (нет данных), используем консервативный коэффициент
+            if margin_per_lot <= 0:
+                margin_rate = 0.25  # 25% margin requirement (very conservative, actual is ~12%)
+                position_value_per_lot = current_price * lot_size
+                margin_per_lot = position_value_per_lot * margin_rate
+                logger.warning(
+                    f"[{instrument}] ⚠️ No margin data in dictionary, using calculated: "
+                    f"{margin_per_lot:.2f} руб per lot (rate: {margin_rate*100:.0f}%)"
+                )
+            else:
+                logger.debug(
+                    f"[{instrument}] Using margin from dictionary: {margin_per_lot:.2f} руб per lot"
+                )
             
             if margin_per_lot <= 0:
                 logger.error(f"[{instrument}] ❌ Invalid margin calculation: price={current_price}, lot_size={lot_size}")
