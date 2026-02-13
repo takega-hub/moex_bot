@@ -405,27 +405,49 @@ class TinkoffClient:
                         
                         # Добавляем информацию о гарантийном обеспечении (марже), если доступна
                         # Для фьючерсов это важная информация для понимания распределения депозита
-                        if hasattr(position, 'initial_margin'):
-                            initial_margin = position.initial_margin
-                            pos_data["initial_margin"] = float(initial_margin.units) + float(initial_margin.nano) / 1e9
+                        # Проверяем, что поле существует и является объектом MoneyValue, а не bool
+                        if hasattr(position, 'initial_margin') and position.initial_margin is not None:
+                            try:
+                                initial_margin = position.initial_margin
+                                # Проверяем, что это объект с атрибутами units и nano, а не bool
+                                if hasattr(initial_margin, 'units') and hasattr(initial_margin, 'nano'):
+                                    pos_data["initial_margin"] = float(initial_margin.units) + float(initial_margin.nano) / 1e9
+                            except (AttributeError, TypeError) as e:
+                                logger.debug(f"Error parsing initial_margin for {position.figi}: {e}")
                         
-                        if hasattr(position, 'current_margin'):
-                            current_margin = position.current_margin
-                            pos_data["current_margin"] = float(current_margin.units) + float(current_margin.nano) / 1e9
+                        if hasattr(position, 'current_margin') and position.current_margin is not None:
+                            try:
+                                current_margin = position.current_margin
+                                if hasattr(current_margin, 'units') and hasattr(current_margin, 'nano'):
+                                    pos_data["current_margin"] = float(current_margin.units) + float(current_margin.nano) / 1e9
+                            except (AttributeError, TypeError) as e:
+                                logger.debug(f"Error parsing current_margin for {position.figi}: {e}")
                         
-                        if hasattr(position, 'blocked'):
-                            blocked = position.blocked
-                            pos_data["blocked"] = float(blocked.units) + float(blocked.nano) / 1e9
+                        if hasattr(position, 'blocked') and position.blocked is not None:
+                            try:
+                                blocked = position.blocked
+                                if hasattr(blocked, 'units') and hasattr(blocked, 'nano'):
+                                    pos_data["blocked"] = float(blocked.units) + float(blocked.nano) / 1e9
+                            except (AttributeError, TypeError) as e:
+                                logger.debug(f"Error parsing blocked for {position.figi}: {e}")
                         
                         # Вариационная маржа (текущий PnL по позиции)
-                        if hasattr(position, 'expected_yield'):
-                            expected_yield = position.expected_yield
-                            pos_data["expected_yield"] = float(expected_yield.units) + float(expected_yield.nano) / 1e9
+                        if hasattr(position, 'expected_yield') and position.expected_yield is not None:
+                            try:
+                                expected_yield = position.expected_yield
+                                if hasattr(expected_yield, 'units') and hasattr(expected_yield, 'nano'):
+                                    pos_data["expected_yield"] = float(expected_yield.units) + float(expected_yield.nano) / 1e9
+                            except (AttributeError, TypeError) as e:
+                                logger.debug(f"Error parsing expected_yield for {position.figi}: {e}")
                         
                         # Стоимость позиции
-                        if hasattr(position, 'current_nkd'):
-                            current_nkd = position.current_nkd
-                            pos_data["current_nkd"] = float(current_nkd.units) + float(current_nkd.nano) / 1e9
+                        if hasattr(position, 'current_nkd') and position.current_nkd is not None:
+                            try:
+                                current_nkd = position.current_nkd
+                                if hasattr(current_nkd, 'units') and hasattr(current_nkd, 'nano'):
+                                    pos_data["current_nkd"] = float(current_nkd.units) + float(current_nkd.nano) / 1e9
+                            except (AttributeError, TypeError) as e:
+                                logger.debug(f"Error parsing current_nkd for {position.figi}: {e}")
                         
                         positions.append(pos_data)
                 
