@@ -218,9 +218,77 @@ class MLStrategy:
                 logger.debug(f"generate_signal: insufficient data - {len(df)} candles, need 60")
                 return None
             
-            # Prepare features
-            features_df = self.feature_engineer.prepare_features_for_prediction(df, lookback=60)
-            if features_df is None or features_df.empty:
+            # Check if model expects MTF features (1hour, 4hour)
+            # If yes, create them BEFORE prepare_features_for_prediction
+            higher_timeframes = {}
+            if self.feature_names:
+                mtf_timeframes = []
+                for feat_name in self.feature_names:
+                    if "_1hour" in feat_name or "_1h" in feat_name:
+                        if "1hour" not in mtf_timeframes:
+                            mtf_timeframes.append("1hour")
+                    elif "_4hour" in feat_name or "_4h" in feat_name:
+                        if "4hour" not in mtf_timeframes:
+                            mtf_timeframes.append("4hour")
+                
+                # Create MTF timeframes from historical data
+                if mtf_timeframes:
+                    try:
+                        # Prepare df for aggregation (need full history)
+                        df_full = df.tail(500).copy()  # Use last 500 candles for MTF aggregation
+                        if not isinstance(df_full.index, pd.DatetimeIndex):
+                            if "time" in df_full.columns:
+                                df_full.index = pd.to_datetime(df_full["time"])
+                            elif "timestamp" in df_full.columns:
+                                df_full.index = pd.to_datetime(df_full["timestamp"])
+                        
+                        if isinstance(df_full.index, pd.DatetimeIndex):
+                            ohlcv_agg = {
+                                "open": "first",
+                                "high": "max",
+                                "low": "min",
+                                "close": "last",
+                                "volume": "sum",
+                            }
+                            
+                            for tf in mtf_timeframes:
+                                if tf == "1hour":
+                                    df_tf = df_full.resample("60min").agg(ohlcv_agg).dropna()
+                                elif tf == "4hour":
+                                    df_tf = df_full.resample("4H").agg(ohlcv_agg).dropna()
+                                else:
+                                    continue
+                                
+                                if not df_tf.empty:
+                                    higher_timeframes[tf] = df_tf
+                    except Exception as e:
+                        logger.debug(f"Error creating MTF timeframes: {e}")
+            
+            # Prepare features (this creates base features for 15m timeframe)
+            # We'll add MTF features after this
+            df_with_features = df.tail(60).copy()
+            if not isinstance(df_with_features.index, pd.DatetimeIndex):
+                if "time" in df_with_features.columns:
+                    df_with_features.index = pd.to_datetime(df_with_features["time"])
+                elif "timestamp" in df_with_features.columns:
+                    df_with_features.index = pd.to_datetime(df_with_features["timestamp"])
+            
+            # Create base technical indicators
+            df_with_features = self.feature_engineer.create_technical_indicators(df_with_features)
+            
+            # Add MTF features if needed
+            if higher_timeframes:
+                df_with_features = self.feature_engineer.add_mtf_features(
+                    df_with_features, higher_timeframes
+                )
+            
+            # Get last row for prediction
+            if len(df_with_features) > 0:
+                features_df = df_with_features.tail(1).copy()
+                # Fill NaN and inf
+                features_df = features_df.fillna(0.0)
+                features_df = features_df.replace([np.inf, -np.inf], 0.0)
+            else:
                 logger.debug(f"generate_signal: failed to prepare features - df shape: {df.shape}")
                 return None
             
