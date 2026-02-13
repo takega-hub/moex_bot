@@ -303,8 +303,17 @@ class MLStrategy:
                 # Ensure we have all required features
                 missing_features = set(self.feature_names) - set(features_df.columns)
                 if missing_features:
-                    # Log missing features at WARNING level
-                    logger.warning(f"Missing features: {missing_features}. Adding zeros...")
+                    # Separate 4hour features (not used in MTF strategy) from other missing features
+                    missing_4hour = {f for f in missing_features if "4hour" in f.lower() or "_4h" in f.lower()}
+                    missing_other = missing_features - missing_4hour
+                    
+                    # Log 4hour features at DEBUG level (expected, not critical - models trained with them but we don't use them)
+                    if missing_4hour:
+                        logger.debug(f"Missing 4hour features (not used in MTF strategy): {missing_4hour}. Adding zeros...")
+                    
+                    # Log other missing features at WARNING level (unexpected, might be critical)
+                    if missing_other:
+                        logger.warning(f"Missing features: {missing_other}. Adding zeros...")
                     
                     # Fill all missing features with zeros
                     for feat in missing_features:
