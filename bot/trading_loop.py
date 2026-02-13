@@ -819,11 +819,23 @@ class TradingLoop:
             # Use calculated available balance with safety factor
             balance = api_available_safe
             
+            # Проверка минимального баланса для открытия позиции
+            # Биржа может требовать минимальный баланс (например, 3000 руб) для открытия позиций
+            MIN_BALANCE_FOR_TRADING = 3000.0  # Минимальный баланс для торговли
+            if total_balance < MIN_BALANCE_FOR_TRADING:
+                logger.warning(
+                    f"[{instrument}] ⚠️ Total balance {total_balance:.2f} руб is below minimum "
+                    f"required {MIN_BALANCE_FOR_TRADING:.2f} руб for trading. "
+                    f"Cannot open positions."
+                )
+                return
+            
             if balance <= 0:
                 logger.error(
                     f"[{instrument}] ❌ No available margin. "
                     f"Total balance: {total_balance:.2f} руб, "
-                    f"Margin used: {total_margin_used:.2f} руб"
+                    f"Margin used: {total_margin_used:.2f} руб, "
+                    f"Blocked margin: {total_blocked_margin:.2f} руб"
                 )
                 return
             
@@ -908,7 +920,25 @@ class TradingLoop:
                 safety_factor = 0.70
             available_margin = available_margin * safety_factor
             
-            # Check if we have enough margin for at least 1 lot
+            # Проверка: если даже 1 лот не может быть открыт с доступным балансом,
+            # возможно, биржа требует больше маржи или есть другие ограничения
+            # Используем более консервативный подход - требуем минимум 5x маржи для 1 лота
+            min_margin_for_1_lot = margin_per_lot * 5.0  # Требуем 5x маржи для безопасности
+            
+            if available_margin < min_margin_for_1_lot:
+                logger.warning(
+                    f"[{instrument}] ⚠️ Insufficient margin for position (conservative check). "
+                    f"Available (after safety): {available_margin:.2f} руб, "
+                    f"Required for 1 lot (5x safety): {min_margin_for_1_lot:.2f} руб, "
+                    f"Margin per lot: {margin_per_lot:.2f} руб, "
+                    f"Total balance: {total_balance:.2f} руб, "
+                    f"Blocked margin: {total_blocked_margin:.2f} руб, "
+                    f"Real available: {available_balance:.2f} руб. "
+                    f"Exchange may require more margin than calculated."
+                )
+                return
+            
+            # Проверка на минимальную маржу для 1 лота (обычная)
             if available_margin < margin_per_lot:
                 logger.warning(
                     f"[{instrument}] ⚠️ Insufficient margin for position. "
@@ -1108,7 +1138,12 @@ class TradingLoop:
                             f"Cannot open position with available margin. "
                             f"Even 1 lot failed with available balance: {available_balance:.2f} руб, "
                             f"margin per lot: {margin_per_lot:.2f} руб. "
-                            f"This suggests insufficient funds or exchange requirements not met."
+                            f"Total balance: {total_balance:.2f} руб, "
+                            f"Blocked margin: {total_blocked_margin:.2f} руб, "
+                            f"Real available: {available_balance:.2f} руб. "
+                            f"This suggests exchange requires more margin than calculated or minimum balance not met. "
+                            f"Consider: 1) Increasing total balance to 5000+ руб, 2) Using larger margin per lot, "
+                            f"3) Checking exchange requirements for {instrument}."
                         )
                 
                 if self.tg_bot:
