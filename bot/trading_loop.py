@@ -852,8 +852,18 @@ class TradingLoop:
                     f"{margin_per_lot:.2f} руб per lot (rate: {margin_rate*100:.0f}%)"
                 )
             else:
-                logger.debug(
-                    f"[{instrument}] Using margin from dictionary: {margin_per_lot:.2f} руб per lot"
+                # Добавляем запас маржи для учета вариационной маржи и других требований биржи
+                # Для микро-контрактов (NRG6) используем больший запас
+                if instrument.upper() == "NRG6":
+                    safety_multiplier = 2.0  # 100% запас для микро-контрактов
+                else:
+                    safety_multiplier = 1.5  # 50% запас для остальных
+                
+                original_margin = margin_per_lot
+                margin_per_lot = margin_per_lot * safety_multiplier
+                logger.info(
+                    f"[{instrument}] Using margin from dictionary with {safety_multiplier*100:.0f}% safety buffer: "
+                    f"{margin_per_lot:.2f} руб per lot (original: {original_margin:.2f} руб)"
                 )
             
             if margin_per_lot <= 0:
@@ -995,8 +1005,25 @@ class TradingLoop:
                         f"Lots requested: {lots}, "
                         f"Total balance: {total_balance:.2f} руб, "
                         f"API available: {available_balance:.2f} руб, "
-                        f"Margin used: {total_margin_used:.2f} руб"
+                        f"Margin used: {total_margin_used:.2f} руб, "
+                        f"Margin per lot (with buffer): {margin_per_lot:.2f} руб"
                     )
+                    
+                    # Увеличиваем запас маржи еще на 100% для следующей попытки
+                    # Для микро-контрактов используем еще больший запас
+                    if instrument.upper() == "NRG6":
+                        margin_multiplier = 3.0  # Увеличиваем в 3 раза для микро-контрактов
+                    else:
+                        margin_multiplier = 2.0  # Увеличиваем в 2 раза для остальных
+                    
+                    original_margin_for_retry = margin_per_lot
+                    margin_per_lot = margin_per_lot * margin_multiplier
+                    logger.warning(
+                        f"[{instrument}] ⚠️ Increasing margin requirement by {margin_multiplier*100:.0f}% "
+                        f"to {margin_per_lot:.2f} руб per lot (was {original_margin_for_retry:.2f} руб) "
+                        f"to account for exchange requirements"
+                    )
+                    
                     # Try with fewer lots - reduce very aggressively
                     # Try multiple attempts with decreasing lot sizes
                     max_attempts = 5
@@ -1007,22 +1034,22 @@ class TradingLoop:
                         attempt += 1
                         
                         if attempt == 1:
-                            # First attempt: reduce by 75%
-                            reduced_lots = max(1, int(lots * 0.25))
-                        elif attempt == 2:
-                            # Second attempt: reduce to 10% of original
+                            # First attempt: reduce by 90% (оставляем только 10%)
                             reduced_lots = max(1, int(lots * 0.1))
+                        elif attempt == 2:
+                            # Second attempt: reduce to 5% of original
+                            reduced_lots = max(1, int(lots * 0.05))
                         elif attempt == 3:
-                            # Third attempt: calculate based on available margin with 50% buffer
-                            max_lots_by_margin = int((balance * 0.5) / margin_per_lot)
-                            reduced_lots = max(1, min(max_lots_by_margin, lots // 4))
+                            # Third attempt: calculate based on available margin with 30% buffer
+                            max_lots_by_margin = int((balance * 0.3) / margin_per_lot)
+                            reduced_lots = max(1, min(max_lots_by_margin, lots // 10))
                         elif attempt == 4:
                             # Fourth attempt: try just 1 lot
                             reduced_lots = 1
                         else:
                             # Last attempt: calculate absolute minimum based on available margin
-                            # Use only 30% of available margin for maximum safety
-                            max_lots_by_margin = int((balance * 0.3) / margin_per_lot)
+                            # Use only 20% of available margin for maximum safety
+                            max_lots_by_margin = int((balance * 0.2) / margin_per_lot)
                             reduced_lots = max(1, min(max_lots_by_margin, 1))  # Cap at 1 lot max
                         
                         if reduced_lots <= 0:

@@ -1,15 +1,18 @@
 """
-Скрипт для обучения всех моделей (15m и 1h) по активным символам.
+Скрипт для обучения всех моделей (15m и 1h) по активным символам для MTF стратегии.
 
 Использование:
-    # Обучение всех моделей для всех активных инструментов
+    # Обучение всех моделей для всех активных инструментов (15m с MTF, 1h без MTF)
     python train_all_models.py
     
-    # Обучение только 15m моделей
+    # Обучение только 15m моделей (с MTF фичами по умолчанию)
     python train_all_models.py --only-15m
     
     # Обучение только 1h моделей
     python train_all_models.py --only-1h
+    
+    # Обучение без MTF фичей (для 15m моделей)
+    python train_all_models.py --no-mtf
 """
 import subprocess
 import sys
@@ -46,8 +49,8 @@ def main():
     )
     parser.add_argument("--only-15m", action="store_true", help="Обучать только 15m модели")
     parser.add_argument("--only-1h", action="store_true", help="Обучать только 1h модели")
-    parser.add_argument("--mtf", action="store_true", help="Использовать MTF фичи")
-    parser.add_argument("--no-mtf", action="store_true", help="НЕ использовать MTF фичи")
+    parser.add_argument("--mtf", action="store_true", help="Использовать MTF фичи (1h) для 15m моделей")
+    parser.add_argument("--no-mtf", action="store_true", help="НЕ использовать MTF фичи для 15m моделей")
     parser.add_argument("--skip-update", action="store_true", help="Пропустить обновление исторических данных")
     parser.add_argument("--update-days", type=int, default=180, help="Количество дней исторических данных для обновления")
     
@@ -78,9 +81,15 @@ def main():
     print("=" * 80)
     print("🚀 ОБУЧЕНИЕ ВСЕХ МОДЕЛЕЙ ПО АКТИВНЫМ СИМВОЛАМ")
     print("=" * 80)
+    # По умолчанию для MTF стратегии: 15m модели с MTF (1h фичи), 1h модели без MTF
+    # Если явно указан --mtf или --no-mtf, используем это значение
+    use_mtf_15m = args.mtf if args.mtf else (False if args.no_mtf else True)  # По умолчанию True для 15m
+    use_mtf_1h = args.mtf if args.mtf else False  # 1h модели не используют MTF
+    
     print(f"📊 Инструменты: {', '.join(tickers)}")
     print(f"⏰ Модели: {'15m' if train_15m else ''}{' + ' if train_15m and train_1h else ''}{'1h' if train_1h else ''}")
-    print(f"🔧 MTF: {'Включено' if args.mtf else 'Выключено' if args.no_mtf else 'По умолчанию'}")
+    print(f"🔧 MTF для 15m: {'Включено (1h фичи)' if use_mtf_15m else 'Выключено'}")
+    print(f"🔧 MTF для 1h: {'Включено' if use_mtf_1h else 'Выключено (не используется)'}")
     print("=" * 80)
     print()
     
@@ -95,9 +104,10 @@ def main():
             
             cmd = [python_exe, "train_models.py", "--ticker", ticker, "--interval", "15min"]
             
-            if args.mtf:
+            # Для 15m моделей используем MTF по умолчанию (нужно для MTF стратегии)
+            if use_mtf_15m:
                 cmd.append("--mtf")
-            elif args.no_mtf:
+            else:
                 cmd.append("--no-mtf")
             
             if args.skip_update:
@@ -137,9 +147,10 @@ def main():
             
             cmd = [python_exe, "train_1h_models.py", "--ticker", ticker]
             
-            if args.mtf:
+            # Для 1h моделей MTF не используется (они уже на 1h таймфрейме)
+            if use_mtf_1h:
                 cmd.append("--mtf")
-            elif args.no_mtf:
+            else:
                 cmd.append("--no-mtf")
             
             if args.skip_update:
