@@ -3,6 +3,7 @@ import asyncio
 import logging
 import signal
 import sys
+import multiprocessing
 from pathlib import Path
 from logging.handlers import RotatingFileHandler
 
@@ -27,23 +28,38 @@ def setup_logging():
     logs_dir = Path("logs")
     logs_dir.mkdir(exist_ok=True)
     
-    # Main log with rotation
-    main_handler = RotatingFileHandler(
-        'logs/bot.log',
-        maxBytes=10*1024*1024,  # 10 MB
-        backupCount=5,
-        encoding='utf-8'
-    )
-    main_handler.setLevel(logging.DEBUG)
+    # Проверяем, что это главный процесс (для multiprocessing)
+    try:
+        import multiprocessing
+        current_process = multiprocessing.current_process()
+        is_main_process = current_process.name == 'MainProcess'
+    except (AttributeError, RuntimeError):
+        is_main_process = True
     
-    # Error log
-    error_handler = RotatingFileHandler(
-        'logs/errors.log',
-        maxBytes=10*1024*1024,
-        backupCount=5,
-        encoding='utf-8'
-    )
-    error_handler.setLevel(logging.ERROR)
+    # Main log with rotation - только в главном процессе
+    if is_main_process:
+        main_handler = RotatingFileHandler(
+            'logs/bot.log',
+            maxBytes=10*1024*1024,  # 10 MB
+            backupCount=5,
+            encoding='utf-8'
+        )
+        main_handler.setLevel(logging.DEBUG)
+        
+        # Error log
+        error_handler = RotatingFileHandler(
+            'logs/errors.log',
+            maxBytes=10*1024*1024,
+            backupCount=5,
+            encoding='utf-8'
+        )
+        error_handler.setLevel(logging.ERROR)
+    else:
+        # В дочерних процессах используем только консольный вывод
+        main_handler = logging.StreamHandler(sys.stdout)
+        main_handler.setLevel(logging.DEBUG)
+        error_handler = logging.StreamHandler(sys.stderr)
+        error_handler.setLevel(logging.ERROR)
     
     # Formatter
     formatter = logging.Formatter(
@@ -58,7 +74,8 @@ def setup_logging():
     root_logger.setLevel(logging.INFO)
     root_logger.handlers.clear()
     root_logger.addHandler(main_handler)
-    root_logger.addHandler(error_handler)
+    if is_main_process:
+        root_logger.addHandler(error_handler)
     
     # Suppress noisy library logs
     logging.getLogger("httpx").setLevel(logging.WARNING)

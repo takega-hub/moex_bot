@@ -388,9 +388,15 @@ class MLBacktestSimulator:
         self.current_position = None
         
         if len(self.trades) <= 10:
+            # Calculate price change percentage for clarity
+            if pos.action == Action.LONG:
+                price_change_pct = ((exit_price - pos.entry_price) / pos.entry_price) * 100
+            else:
+                price_change_pct = ((pos.entry_price - exit_price) / pos.entry_price) * 100
+            
             print(f"\n📊 Закрыта позиция #{len(self.trades)}:")
             print(f"   {pos.action.value} @ {pos.entry_price:.2f} -> {exit_price:.2f} руб")
-            print(f"   PnL: {pnl_rub:.2f} руб ({pos.pnl_pct:.2f}%)")
+            print(f"   PnL: {pnl_rub:.2f} руб ({pos.pnl_pct:.2f}% от маржи, изменение цены: {price_change_pct:+.2f}%)")
     
     def close_all_positions(self, final_time: datetime, final_price: float):
         """Закрывает все позиции в конце бэктеста."""

@@ -1,6 +1,7 @@
 """Logging configuration for trading bot."""
 import logging
 import sys
+import multiprocessing
 from pathlib import Path
 from logging.handlers import RotatingFileHandler
 
@@ -25,20 +26,29 @@ console_formatter = logging.Formatter(
 console_handler.setFormatter(console_formatter)
 logger.addHandler(console_handler)
 
-# Файловый обработчик с ротацией
-file_handler = RotatingFileHandler(
-    logs_dir / 'bot.log',
-    maxBytes=10*1024*1024,  # 10 MB
-    backupCount=5,
-    encoding='utf-8'
-)
-file_handler.setLevel(logging.DEBUG)
-file_formatter = logging.Formatter(
-    '%(asctime)s - %(name)s - %(levelname)s - %(funcName)s:%(lineno)d - %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
-)
-file_handler.setFormatter(file_formatter)
-logger.addHandler(file_handler)
+# Файловый обработчик с ротацией - только в главном процессе
+# Это предотвращает конфликты при ротации логов в multiprocessing
+try:
+    current_process = multiprocessing.current_process()
+    is_main_process = current_process.name == 'MainProcess'
+except (AttributeError, RuntimeError):
+    # Если multiprocessing не инициализирован, считаем что это главный процесс
+    is_main_process = True
+
+if is_main_process:
+    file_handler = RotatingFileHandler(
+        logs_dir / 'bot.log',
+        maxBytes=10*1024*1024,  # 10 MB
+        backupCount=5,
+        encoding='utf-8'
+    )
+    file_handler.setLevel(logging.DEBUG)
+    file_formatter = logging.Formatter(
+        '%(asctime)s - %(name)s - %(levelname)s - %(funcName)s:%(lineno)d - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    file_handler.setFormatter(file_formatter)
+    logger.addHandler(file_handler)
 
 # Отключаем шумные логи библиотек
 logging.getLogger("httpx").setLevel(logging.WARNING)

@@ -864,12 +864,9 @@ class TradingLoop:
                     f"{margin_per_lot:.2f} руб per lot (rate: {margin_rate*100:.0f}%)"
                 )
             else:
-                # Добавляем запас маржи для учета вариационной маржи и других требований биржи
-                # Для микро-контрактов (NRG6) используем больший запас
-                if instrument.upper() == "NRG6":
-                    safety_multiplier = 2.0  # 100% запас для микро-контрактов
-                else:
-                    safety_multiplier = 1.5  # 50% запас для остальных
+                # Добавляем небольшой запас маржи для учета вариационной маржи и других требований биржи
+                # Используем минимальный запас, т.к. blocked_margin из API уже учитывает замороженную маржу
+                safety_multiplier = 1.2  # 20% запас (уменьшено с 50-100%)
                 
                 original_margin = margin_per_lot
                 margin_per_lot = margin_per_lot * safety_multiplier
@@ -922,14 +919,14 @@ class TradingLoop:
             
             # Проверка: если даже 1 лот не может быть открыт с доступным балансом,
             # возможно, биржа требует больше маржи или есть другие ограничения
-            # Используем более консервативный подход - требуем минимум 5x маржи для 1 лота
-            min_margin_for_1_lot = margin_per_lot * 5.0  # Требуем 5x маржи для безопасности
+            # Используем умеренный подход - требуем минимум 1.5x маржи для 1 лота (уменьшено с 5x)
+            min_margin_for_1_lot = margin_per_lot * 1.5  # Требуем 1.5x маржи для безопасности
             
             if available_margin < min_margin_for_1_lot:
                 logger.warning(
                     f"[{instrument}] ⚠️ Insufficient margin for position (conservative check). "
                     f"Available (after safety): {available_margin:.2f} руб, "
-                    f"Required for 1 lot (5x safety): {min_margin_for_1_lot:.2f} руб, "
+                    f"Required for 1 lot (1.5x safety): {min_margin_for_1_lot:.2f} руб, "
                     f"Margin per lot: {margin_per_lot:.2f} руб, "
                     f"Total balance: {total_balance:.2f} руб, "
                     f"Blocked margin: {total_blocked_margin:.2f} руб, "
@@ -1025,6 +1022,15 @@ class TradingLoop:
             else:
                 error_msg = resp.get("retMsg", "Unknown error") if resp else "No response"
                 logger.error(f"[{instrument}] ❌ Failed to place order: {error_msg}")
+                
+                # Check for instrument not available error (skip this trade)
+                if "not available for trading" in str(error_msg) or "30079" in str(error_msg):
+                    logger.warning(
+                        f"[{instrument}] ⚠️ Instrument is not available for trading. "
+                        f"This may happen outside trading hours or if the instrument is temporarily unavailable. "
+                        f"Skipping this trade."
+                    )
+                    return  # Skip this trade, don't retry
                 
                 # Check for insufficient margin error
                 if "Not enough assets" in str(error_msg) or "30042" in str(error_msg):
@@ -1324,14 +1330,22 @@ class TradingLoop:
             if resp and resp.get("retCode") == 0:
                 logger.info(f"[{ticker}] ✅ Position closed: {reason}")
                 
-                # Calculate PnL
-                if trade.side == "Buy":
-                    pnl_pct = ((current_price - trade.entry_price) / trade.entry_price) * 100
-                else:
-                    pnl_pct = ((trade.entry_price - current_price) / trade.entry_price) * 100
+                # Get lot size for accurate PnL calculation
+                try:
+                    lot_size = await asyncio.to_thread(self.tinkoff.get_qty_step, figi)
+                    if lot_size <= 0:
+                        lot_size = 1.0
+                except Exception as e:
+                    logger.warning(f"[{ticker}] Error getting lot size: {e}, using default 1.0")
+                    lot_size = 1.0
                 
-                margin = trade.entry_price * trade.quantity
-                pnl_usd = (pnl_pct / 100) * margin
+                # Calculate PnL correctly: (price_diff) * quantity * lot_size
+                if trade.side == "Buy":
+                    pnl_usd = (current_price - trade.entry_price) * trade.quantity * lot_size
+                    pnl_pct = ((current_price - trade.entry_price) / trade.entry_price) * 100 if trade.entry_price > 0 else 0
+                else:  # Sell (SHORT)
+                    pnl_usd = (trade.entry_price - current_price) * trade.quantity * lot_size
+                    pnl_pct = ((trade.entry_price - current_price) / trade.entry_price) * 100 if trade.entry_price > 0 else 0
                 
                 # Update trade - use ticker, not figi!
                 self.state.update_trade_on_close(ticker, current_price, pnl_usd, pnl_pct, exit_reason=reason)
@@ -1376,14 +1390,22 @@ class TradingLoop:
             
             exit_price = float(df['close'].iloc[-1])
             
-            # Calculate PnL
-            if local_pos.side == "Buy":
-                pnl_pct = ((exit_price - local_pos.entry_price) / local_pos.entry_price) * 100
-            else:
-                pnl_pct = ((local_pos.entry_price - exit_price) / local_pos.entry_price) * 100
+            # Get lot size for accurate PnL calculation
+            try:
+                lot_size = await asyncio.to_thread(self.tinkoff.get_qty_step, figi)
+                if lot_size <= 0:
+                    lot_size = 1.0
+            except Exception as e:
+                logger.warning(f"[{ticker}] Error getting lot size: {e}, using default 1.0")
+                lot_size = 1.0
             
-            margin = local_pos.entry_price * local_pos.quantity
-            pnl_usd = (pnl_pct / 100) * margin
+            # Calculate PnL correctly: (price_diff) * quantity * lot_size
+            if local_pos.side == "Buy":
+                pnl_usd = (exit_price - local_pos.entry_price) * local_pos.quantity * lot_size
+                pnl_pct = ((exit_price - local_pos.entry_price) / local_pos.entry_price) * 100 if local_pos.entry_price > 0 else 0
+            else:  # Sell (SHORT)
+                pnl_usd = (local_pos.entry_price - exit_price) * local_pos.quantity * lot_size
+                pnl_pct = ((local_pos.entry_price - exit_price) / local_pos.entry_price) * 100 if local_pos.entry_price > 0 else 0
             
             # Update trade - use ticker, not figi!
             self.state.update_trade_on_close(ticker, exit_price, pnl_usd, pnl_pct)

@@ -23,6 +23,12 @@ from trading.client import TinkoffClient
 from data.storage import DataStorage
 from utils.logger import logger
 
+# Import for strategy type checking
+try:
+    from bot.ml.mtf_strategy import MultiTimeframeMLStrategy
+except ImportError:
+    MultiTimeframeMLStrategy = None
+
 
 def safe_float(value, default=0.0):
     """Безопасное преобразование в float."""
@@ -423,26 +429,20 @@ class TelegramBot:
             status_text += "  (нет активных инструментов)\n"
         else:
             for ticker in self.state.active_instruments:
-                # Проверяем, используется ли MTF стратегия
-                use_mtf = self.settings.ml_strategy.use_mtf_strategy
+                # Проверяем реальный тип стратегии (не настройки, а фактически загруженную стратегию)
                 is_mtf = False
+                strategy = None
                 
-                if use_mtf and hasattr(self, 'trading_loop') and self.trading_loop:
+                if hasattr(self, 'trading_loop') and self.trading_loop:
                     strategy = self.trading_loop.strategies.get(ticker)
-                    if strategy and hasattr(strategy, 'predict_combined'):
+                    # Проверяем реальный тип стратегии через isinstance
+                    if strategy and MultiTimeframeMLStrategy and isinstance(strategy, MultiTimeframeMLStrategy):
                         is_mtf = True
                         # Загружаем MTF модели
                         mtf_models = self.load_mtf_models_for_instrument(ticker)
                         if mtf_models.get("model_1h") and mtf_models.get("model_15m"):
                             status_text += f"Инструмент: {ticker} | MTF: {mtf_models['model_1h']} + {mtf_models['model_15m']}\n"
                             status_text += f"   🎯 Уверенность: 1h≥{self.settings.ml_strategy.mtf_confidence_threshold_1h*100:.0f}%, 15m≥{self.settings.ml_strategy.mtf_confidence_threshold_15m*100:.0f}%\n"
-                        else:
-                            status_text += f"Инструмент: {ticker} | MTF: ⚠️ Модели не выбраны\n"
-                    else:
-                        # MTF включена, но стратегия не загружена
-                        mtf_models = self.load_mtf_models_for_instrument(ticker)
-                        if mtf_models.get("model_1h") and mtf_models.get("model_15m"):
-                            status_text += f"Инструмент: {ticker} | MTF: {mtf_models['model_1h']} + {mtf_models['model_15m']} (ожидание загрузки)\n"
                         else:
                             status_text += f"Инструмент: {ticker} | MTF: ⚠️ Модели не выбраны\n"
                 
