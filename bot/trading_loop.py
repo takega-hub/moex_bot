@@ -1184,21 +1184,30 @@ class TradingLoop:
             if not local_pos or local_pos.status != "open":
                 return
             
-            # Get latest price - try from position API first, then from storage
+            # Get latest price and OHLC data - try from position API first, then from storage
             current_price = float(position.get("current_price", 0))
-            if current_price <= 0:
-                # Fallback to storage
-                df = self.storage.get_candles(figi=figi, interval=self.settings.timeframe, limit=1)
-                if not df.empty:
+            low_price = current_price  # Default to current_price if low not available
+            high_price = current_price  # Default to current_price if high not available
+            
+            # Get OHLC data from storage for accurate TP/SL checking
+            df = self.storage.get_candles(figi=figi, interval=self.settings.timeframe, limit=1)
+            if not df.empty:
+                if current_price <= 0:
                     current_price = float(df['close'].iloc[-1])
-                else:
-                    logger.warning(f"[{ticker}] ⚠️ Cannot get current price for position check")
-                    return
+                # Get low and high for accurate SL/TP checking
+                if 'low' in df.columns:
+                    low_price = float(df['low'].iloc[-1])
+                if 'high' in df.columns:
+                    high_price = float(df['high'].iloc[-1])
+            elif current_price <= 0:
+                logger.warning(f"[{ticker}] ⚠️ Cannot get current price for position check")
+                return
             
             # Log position status (INFO level for visibility)
             logger.info(
                 f"[{ticker}] 📊 Position check: "
                 f"Price={current_price:.2f}, "
+                f"Low={low_price:.2f}, High={high_price:.2f}, "
                 f"Entry={local_pos.entry_price:.2f}, "
                 f"TP={local_pos.take_profit if local_pos.take_profit else 'None'}, "
                 f"SL={local_pos.stop_loss if local_pos.stop_loss else 'None'}, "
@@ -1206,30 +1215,36 @@ class TradingLoop:
                 f"Qty={quantity}"
             )
             
-            # Check TP/SL - check each independently (don't require both)
+            # Check TP/SL - use low/high prices for accurate detection
+            # For LONG: check if low price hit SL, or high price hit TP
+            # For SHORT: check if high price hit SL, or low price hit TP
             should_close = False
             exit_reason = None
             
             if local_pos.side == "Buy":
                 # LONG position
-                if local_pos.take_profit and current_price >= local_pos.take_profit:
+                # TP: check if high price reached take profit
+                if local_pos.take_profit and high_price >= local_pos.take_profit:
                     should_close = True
                     exit_reason = "TP"
-                    logger.info(f"[{ticker}] ✅ TP hit: {current_price:.2f} >= {local_pos.take_profit:.2f}")
-                elif local_pos.stop_loss and current_price <= local_pos.stop_loss:
+                    logger.info(f"[{ticker}] ✅ TP hit: {high_price:.2f} >= {local_pos.take_profit:.2f}")
+                # SL: check if low price reached stop loss
+                elif local_pos.stop_loss and low_price <= local_pos.stop_loss:
                     should_close = True
                     exit_reason = "SL"
-                    logger.info(f"[{ticker}] ❌ SL hit: {current_price:.2f} <= {local_pos.stop_loss:.2f}")
+                    logger.info(f"[{ticker}] ❌ SL hit: {low_price:.2f} <= {local_pos.stop_loss:.2f}")
             else:
                 # SHORT position
-                if local_pos.take_profit and current_price <= local_pos.take_profit:
+                # TP: check if low price reached take profit
+                if local_pos.take_profit and low_price <= local_pos.take_profit:
                     should_close = True
                     exit_reason = "TP"
-                    logger.info(f"[{ticker}] ✅ TP hit: {current_price:.2f} <= {local_pos.take_profit:.2f}")
-                elif local_pos.stop_loss and current_price >= local_pos.stop_loss:
+                    logger.info(f"[{ticker}] ✅ TP hit: {low_price:.2f} <= {local_pos.take_profit:.2f}")
+                # SL: check if high price reached stop loss
+                elif local_pos.stop_loss and high_price >= local_pos.stop_loss:
                     should_close = True
                     exit_reason = "SL"
-                    logger.info(f"[{ticker}] ❌ SL hit: {current_price:.2f} >= {local_pos.stop_loss:.2f}")
+                    logger.info(f"[{ticker}] ❌ SL hit: {high_price:.2f} >= {local_pos.stop_loss:.2f}")
             
             # Auto-set TP/SL if missing
             if not local_pos.take_profit or not local_pos.stop_loss:
