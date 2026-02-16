@@ -864,15 +864,6 @@ class TradingLoop:
                 )
                 return
             
-            # Дополнительная проверка: если даже 1 лот не проходит, возможно проблема в минимальном балансе
-            # или биржа требует больше маржи, чем рассчитывается
-            if margin_per_lot > 0 and balance >= margin_per_lot * 10:
-                # Достаточно баланса для 10+ лотов, но даже 1 не проходит - возможно проблема в требованиях биржи
-                logger.debug(
-                    f"[{instrument}] Balance sufficient for {int(balance / margin_per_lot)} lots, "
-                    f"but exchange may have additional requirements"
-                )
-            
             if balance <= 0:
                 logger.error(
                     f"[{instrument}] ❌ No available margin. "
@@ -921,6 +912,15 @@ class TradingLoop:
             if margin_per_lot <= 0:
                 logger.error(f"[{instrument}] ❌ Invalid margin calculation: price={current_price}, lot_size={lot_size}")
                 return
+            
+            # Дополнительная проверка: если даже 1 лот не проходит, возможно проблема в минимальном балансе
+            # или биржа требует больше маржи, чем рассчитывается
+            if balance >= margin_per_lot * 10:
+                # Достаточно баланса для 10+ лотов, но даже 1 не проходит - возможно проблема в требованиях биржи
+                logger.debug(
+                    f"[{instrument}] Balance sufficient for {int(balance / margin_per_lot)} lots, "
+                    f"but exchange may have additional requirements"
+                )
             
             # Calculate available margin
             # Strategy: use fixed amount if balance is large enough, otherwise use percentage
