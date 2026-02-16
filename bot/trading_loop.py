@@ -125,7 +125,7 @@ class TradingLoop:
                 for instrument in self.state.active_instruments:
                     logger.debug(f"🔄 About to process instrument: {instrument}")
                     try:
-                        await self.process_instrument(instrument)
+                    await self.process_instrument(instrument)
                     except Exception as e:
                         logger.error(f"❌ Error processing {instrument}: {e}", exc_info=True)
                     if len(self.state.active_instruments) > 1:
@@ -207,7 +207,7 @@ class TradingLoop:
                             )
                             continue
                         
-                        ticker = instrument_info.get("ticker")
+                            ticker = instrument_info.get("ticker")
                         if not ticker:
                             logger.warning(
                                 f"⚠️ Position found with FIGI {figi} but ticker is missing. "
@@ -217,7 +217,7 @@ class TradingLoop:
                         
                         if ticker in self.state.active_instruments:
                             found_tickers.append(ticker)
-                            await self.check_position(figi, position)
+                                await self.check_position(figi, position)
                         else:
                             skipped_tickers.append(ticker)
                             logger.warning(
@@ -285,26 +285,26 @@ class TradingLoop:
                 try:
                     instrument_data = await asyncio.wait_for(
                         asyncio.to_thread(
-                            self.tinkoff.find_instrument,
-                            instrument,
-                            instrument_type="futures"
+                    self.tinkoff.find_instrument,
+                    instrument,
+                    instrument_type="futures"
                         ),
                         timeout=30.0
-                    )
-                    if instrument_data:
+                )
+                if instrument_data:
                         logger.info(f"[{instrument}] Found via API, saving to storage...")
                         await asyncio.wait_for(
                             asyncio.to_thread(
-                                self.storage.save_instrument,
-                                figi=instrument_data["figi"],
-                                ticker=instrument,
-                                name=instrument_data["name"],
-                                instrument_type=instrument_data["instrument_type"]
+                        self.storage.save_instrument,
+                        figi=instrument_data["figi"],
+                        ticker=instrument,
+                        name=instrument_data["name"],
+                        instrument_type=instrument_data["instrument_type"]
                             ),
                             timeout=10.0
-                        )
-                        instrument_info = instrument_data
-                    else:
+                    )
+                    instrument_info = instrument_data
+                else:
                         logger.warning(f"[{instrument}] Instrument not found via API")
                         return
                 except asyncio.TimeoutError:
@@ -331,13 +331,13 @@ class TradingLoop:
             try:
                 await asyncio.wait_for(
                     asyncio.to_thread(
-                        self.data_collector.update_candles,
-                        figi,
-                        interval=self.settings.timeframe,
-                        days_back=1
+                self.data_collector.update_candles,
+                figi,
+                interval=self.settings.timeframe,
+                days_back=1
                     ),
                     timeout=60.0
-                )
+            )
                 logger.debug(f"[{instrument}] Candles updated successfully")
             except asyncio.TimeoutError:
                 logger.error(f"[{instrument}] Timeout updating candles in process_instrument (60s exceeded)")
@@ -368,8 +368,8 @@ class TradingLoop:
             # Initialize strategy if needed
             if instrument not in self.strategies:
                 logger.info(f"[{instrument}] 🔄 Strategy not loaded, initializing...")
-                from pathlib import Path
-                models_dir = Path("ml_models")
+                    from pathlib import Path
+                    models_dir = Path("ml_models")
                 
                 # Проверяем, включена ли MTF стратегия
                 use_mtf = self.settings.ml_strategy.use_mtf_strategy
@@ -430,34 +430,34 @@ class TradingLoop:
                     # Используем обычную стратегию (15m)
                     model_path = self.state.instrument_models.get(instrument)
                     if not model_path:
-                        models = list(models_dir.glob(f"*_{instrument}_*.pkl"))
-                        if models:
-                            model_path = str(models[0])
-                            self.state.instrument_models[instrument] = model_path
-                    
-                    if model_path:
-                        logger.info(f"[{instrument}] 🔄 Loading model: {model_path}")
-                        ml_settings = self.settings.get_ml_settings_for_instrument(instrument)
-                        try:
-                            self.strategies[instrument] = MLStrategy(
-                                model_path=model_path,
-                                confidence_threshold=ml_settings.confidence_threshold or self.settings.ml_strategy.confidence_threshold,
-                                min_signal_strength=ml_settings.min_signal_strength or self.settings.ml_strategy.min_signal_strength
-                            )
-                            logger.info(
-                                f"[{instrument}] ✅ Model loaded successfully. "
-                                f"Confidence threshold: {ml_settings.confidence_threshold or self.settings.ml_strategy.confidence_threshold:.2%}, "
-                                f"Data available: {len(df)} candles"
-                            )
-                        except Exception as e:
-                            logger.error(f"[{instrument}] ❌ Failed to load model: {e}", exc_info=True)
-                            return
-                    else:
-                        logger.warning(
-                            f"[{instrument}] ⚠️ No model found. "
-                            f"Search pattern: *_{instrument}_*.pkl in ml_models/"
+                    models = list(models_dir.glob(f"*_{instrument}_*.pkl"))
+                    if models:
+                        model_path = str(models[0])
+                        self.state.instrument_models[instrument] = model_path
+                
+                if model_path:
+                    logger.info(f"[{instrument}] 🔄 Loading model: {model_path}")
+                    ml_settings = self.settings.get_ml_settings_for_instrument(instrument)
+                    try:
+                        self.strategies[instrument] = MLStrategy(
+                            model_path=model_path,
+                            confidence_threshold=ml_settings.confidence_threshold or self.settings.ml_strategy.confidence_threshold,
+                            min_signal_strength=ml_settings.min_signal_strength or self.settings.ml_strategy.min_signal_strength
                         )
+                        logger.info(
+                            f"[{instrument}] ✅ Model loaded successfully. "
+                            f"Confidence threshold: {ml_settings.confidence_threshold or self.settings.ml_strategy.confidence_threshold:.2%}, "
+                            f"Data available: {len(df)} candles"
+                        )
+                    except Exception as e:
+                        logger.error(f"[{instrument}] ❌ Failed to load model: {e}", exc_info=True)
                         return
+                else:
+                    logger.warning(
+                        f"[{instrument}] ⚠️ No model found. "
+                        f"Search pattern: *_{instrument}_*.pkl in ml_models/"
+                    )
+                    return
             
             # Generate signal
             strategy = self.strategies.get(instrument)
@@ -530,14 +530,14 @@ class TradingLoop:
                 )
             else:
                 # Обычная стратегия
-                signal = await asyncio.to_thread(
-                    strategy.generate_signal,
-                    row=row,
-                    df=df_for_signal,
-                    has_position=has_pos,
-                    current_price=current_price,
-                    leverage=self.settings.leverage
-                )
+            signal = await asyncio.to_thread(
+                strategy.generate_signal,
+                row=row,
+                df=df_for_signal,
+                has_position=has_pos,
+                current_price=current_price,
+                leverage=self.settings.leverage
+            )
             
             if not signal:
                 # Log detailed reason why signal wasn't generated
@@ -690,7 +690,7 @@ class TradingLoop:
                 )
                 if instrument_info:
                     lot_size = instrument_info.get('lot', 1.0)
-                    if lot_size <= 0:
+            if lot_size <= 0:
                         lot_size = 1.0
                     logger.info(
                         f"[{instrument}] 📊 Instrument info: lot={lot_size}, "
@@ -909,8 +909,8 @@ class TradingLoop:
                 return
             
             # Calculate position size
-            # Приоритет: используем значения из API (dlong/dshort), затем справочник, затем расчет
-            from bot.margin_rates import get_margin_for_position
+            # ВАЖНО: Перед расчетом маржи обновляем ГО из API по формуле
+            from bot.margin_rates import get_margin_for_position, update_margin_for_instrument_from_api
             
             if lot_size <= 0:
                 lot_size = 1.0
@@ -918,16 +918,26 @@ class TradingLoop:
             # Определяем направление позиции
             is_long = signal.action == "LONG"
             
-            # ВАЖНО: API возвращает dlong/dshort, но эти значения НЕ соответствуют реальной марже!
-            # Например, для NGG6: API dlong = 0.33 руб, но реальная маржа = 7 667,72 ₽
-            # Поэтому используем словарь как ОСНОВНОЙ источник маржи
-            margin_per_lot = 0.0
-            margin_source = "unknown"
+            # ОБНОВЛЯЕМ ГО из API перед открытием позиции (автоматически по формуле)
+            logger.info(f"[{instrument}] 🔄 Обновление ГО из API перед открытием позиции...")
+            updated_margin = await update_margin_for_instrument_from_api(
+                tinkoff_client=self.tinkoff,
+                ticker=instrument,
+                figi=figi,
+                current_price=current_price,
+                is_long=is_long
+            )
             
-            # Сначала пробуем словарь (основной источник)
-            # Передаем dlong/dshort из API для расчета через стоимость пункта
+            if updated_margin:
+                logger.info(f"[{instrument}] ✅ ГО обновлено из API: {updated_margin:.2f} ₽/лот")
+            else:
+                logger.warning(f"[{instrument}] ⚠️ Не удалось обновить ГО из API, используем существующее значение из словаря")
+            
+            # Теперь получаем маржу (будет использовано обновленное значение из словаря)
+            # Передаем dlong/dshort из API для расчета через стоимость пункта (если словарь пуст)
             api_dlong = instrument_info.get('dlong', None) if instrument_info else None
             api_dshort = instrument_info.get('dshort', None) if instrument_info else None
+            api_min_price_increment = instrument_info.get('min_price_increment', None) if instrument_info else None
             
             margin_per_lot = get_margin_for_position(
                 ticker=instrument,
@@ -936,9 +946,10 @@ class TradingLoop:
                 lot_size=lot_size,
                 dlong=api_dlong,
                 dshort=api_dshort,
-                is_long=is_long
+                is_long=is_long,
+                point_value=api_min_price_increment
             )
-            margin_source = "dictionary"
+            margin_source = "dictionary_updated_from_api"
             
             if margin_per_lot > 0:
                 logger.info(
@@ -965,8 +976,8 @@ class TradingLoop:
             # Если справочник тоже вернул 0, используем консервативный коэффициент
             if margin_per_lot <= 0:
                 margin_rate = 0.25  # 25% margin requirement (very conservative, actual is ~12%)
-                position_value_per_lot = current_price * lot_size
-                margin_per_lot = position_value_per_lot * margin_rate
+            position_value_per_lot = current_price * lot_size
+            margin_per_lot = position_value_per_lot * margin_rate
                 margin_source = "calculated"
                 logger.warning(
                     f"[{instrument}] ⚠️ No margin data in API or dictionary, using calculated: "
@@ -1257,7 +1268,7 @@ class TradingLoop:
                                     f"[{instrument}] ⚠️ Attempt {attempt} failed: "
                                     f"Still insufficient margin for {reduced_lots} lots"
                                 )
-                            else:
+                    else:
                                 logger.error(f"[{instrument}] ❌ Attempt {attempt} failed: {error_msg2}")
                     
                     if not success:
@@ -1367,29 +1378,29 @@ class TradingLoop:
             should_close = False
             exit_reason = None
             
-            if local_pos.side == "Buy":
-                # LONG position
+                if local_pos.side == "Buy":
+                    # LONG position
                 # TP: check if high price reached take profit
                 if local_pos.take_profit and high_price >= local_pos.take_profit:
-                    should_close = True
-                    exit_reason = "TP"
+                        should_close = True
+                        exit_reason = "TP"
                     logger.info(f"[{ticker}] ✅ TP hit: {high_price:.2f} >= {local_pos.take_profit:.2f}")
                 # SL: check if low price reached stop loss
                 elif local_pos.stop_loss and low_price <= local_pos.stop_loss:
-                    should_close = True
-                    exit_reason = "SL"
+                        should_close = True
+                        exit_reason = "SL"
                     logger.info(f"[{ticker}] ❌ SL hit: {low_price:.2f} <= {local_pos.stop_loss:.2f}")
-            else:
-                # SHORT position
+                else:
+                    # SHORT position
                 # TP: check if low price reached take profit
                 if local_pos.take_profit and low_price <= local_pos.take_profit:
-                    should_close = True
-                    exit_reason = "TP"
+                        should_close = True
+                        exit_reason = "TP"
                     logger.info(f"[{ticker}] ✅ TP hit: {low_price:.2f} <= {local_pos.take_profit:.2f}")
                 # SL: check if high price reached stop loss
                 elif local_pos.stop_loss and high_price >= local_pos.stop_loss:
-                    should_close = True
-                    exit_reason = "SL"
+                        should_close = True
+                        exit_reason = "SL"
                     logger.info(f"[{ticker}] ❌ SL hit: {high_price:.2f} >= {local_pos.stop_loss:.2f}")
             
             # Auto-set TP/SL if missing
@@ -1906,16 +1917,16 @@ class TradingLoop:
                         try:
                             new_candles = await asyncio.wait_for(
                                 asyncio.to_thread(
-                                    self.data_collector.update_candles,
-                                    figi=figi,
-                                    interval=self.settings.timeframe,
-                                    days_back=1
+                            self.data_collector.update_candles,
+                            figi=figi,
+                            interval=self.settings.timeframe,
+                            days_back=1
                                 ),
                                 timeout=60.0  # 60 секунд для сбора данных
-                            )
-                            
-                            if new_candles > 0:
-                                logger.info(f"[{instrument}] ✅ Collected {new_candles} new candles")
+                        )
+                        
+                        if new_candles > 0:
+                            logger.info(f"[{instrument}] ✅ Collected {new_candles} new candles")
                         except asyncio.TimeoutError:
                             logger.error(f"[{instrument}] Timeout updating candles (60s exceeded)")
                         except Exception as e:

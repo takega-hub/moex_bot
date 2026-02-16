@@ -421,10 +421,16 @@ def analyze_instrument(
         # ========================================================================
         # ШАГ 2: Расчет ГО (гарантийного обеспечения) - ТОЛЬКО ФОРМУЛА
         # ========================================================================
-        from bot.margin_rates import get_margin_per_lot_from_api_data
+        from bot.margin_rates import get_margin_per_lot_from_api_data, POINT_VALUE
+        
+        # ВАЖНО: Если min_price_increment из API = 0 или None, используем словарь POINT_VALUE
+        if not min_price_increment or min_price_increment == 0:
+            if ticker.upper() in POINT_VALUE and POINT_VALUE[ticker.upper()] > 0:
+                min_price_increment = POINT_VALUE[ticker.upper()]
+                logger.debug(f"{ticker}: Используем стоимость пункта из словаря POINT_VALUE: {min_price_increment:.2f} ₽ (min_price_increment из API был 0 или неправильным)")
         
         # Расчет ГО только через формулу: point_value * price * dlong/dshort
-        # где point_value = min_price_increment из API
+        # где point_value = min_price_increment из API или словаря
         margin_per_lot = None
         
         if min_price_increment and min_price_increment > 0:

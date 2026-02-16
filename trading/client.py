@@ -683,7 +683,7 @@ class TinkoffClient:
                 else:
                     info['lot'] = 1.0
                 
-                # Price step
+                # Price step (минимальный шаг цены)
                 if hasattr(instrument, 'min_price_increment'):
                     inc = instrument.min_price_increment
                     if hasattr(inc, 'units') and hasattr(inc, 'nano'):
@@ -692,6 +692,18 @@ class TinkoffClient:
                         info['min_price_increment'] = 0.01
                 else:
                     info['min_price_increment'] = 0.01
+                
+                # Стоимость шага цены (min_price_increment_amount) - ЭТО РЕАЛЬНАЯ СТОИМОСТЬ ПУНКТА!
+                # Формула: стоимость пункта = min_price_increment_amount
+                if hasattr(instrument, 'min_price_increment_amount'):
+                    inc_amount = instrument.min_price_increment_amount
+                    if hasattr(inc_amount, 'units') and hasattr(inc_amount, 'nano'):
+                        info['min_price_increment_amount'] = float(inc_amount.units) + float(inc_amount.nano) / 1e9
+                        logger.debug(f"[get_instrument_info] {figi} min_price_increment_amount (стоимость пункта): {info['min_price_increment_amount']:.2f} руб")
+                    elif hasattr(inc_amount, 'units'):
+                        info['min_price_increment_amount'] = float(inc_amount.units)
+                else:
+                    info['min_price_increment_amount'] = None
                 
                 # Извлекаем коэффициенты гарантийного обеспечения (dlong, dshort)
                 def extract_money_value(obj):

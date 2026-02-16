@@ -475,12 +475,16 @@ class TelegramBot:
                     except:
                         pass
                     
-                    # Рассчитываем маржу для LONG и SHORT (берем большее значение)
-                    from bot.margin_rates import get_margin_per_lot_from_api_data
+                    # ВАЖНО: Если min_price_increment из API = 0 или None, используем словарь POINT_VALUE
+                    from bot.margin_rates import get_margin_per_lot_from_api_data, POINT_VALUE
+                    if not min_price_increment or min_price_increment == 0:
+                        if ticker.upper() in POINT_VALUE and POINT_VALUE[ticker.upper()] > 0:
+                            min_price_increment = POINT_VALUE[ticker.upper()]
                     
+                    # Рассчитываем маржу для LONG и SHORT (берем большее значение)
                     margin_for_1_lot = None
                     
-                    # Сначала пробуем через min_price_increment (если доступно)
+                    # Сначала пробуем через min_price_increment (из API или словаря)
                     if min_price_increment and min_price_increment > 0:
                         margin_long = get_margin_per_lot_from_api_data(
                             ticker=ticker,
@@ -623,23 +627,23 @@ class TelegramBot:
                 
                 if not is_mtf:
                     # Обычная стратегия
-                    model_path = self.state.instrument_models.get(ticker)
-                    if model_path and Path(model_path).exists():
-                        model_name = Path(model_path).stem
+                model_path = self.state.instrument_models.get(ticker)
+                if model_path and Path(model_path).exists():
+                    model_name = Path(model_path).stem
+                    ml_settings = self.settings.get_ml_settings_for_instrument(ticker)
+                    status_text += f"Инструмент: {ticker} | Модель: {model_name}\n"
+                    status_text += f"   🎯 Уверенность: ≥{ml_settings.confidence_threshold*100:.0f}%\n"
+                else:
+                    models = self.model_manager.find_models_for_instrument(ticker)
+                    if models:
+                        model_path = str(models[0])
+                        self.model_manager.apply_model(ticker, model_path)
+                        model_name = models[0].stem
                         ml_settings = self.settings.get_ml_settings_for_instrument(ticker)
-                        status_text += f"Инструмент: {ticker} | Модель: {model_name}\n"
+                        status_text += f"Инструмент: {ticker} | Модель: {model_name} (авто)\n"
                         status_text += f"   🎯 Уверенность: ≥{ml_settings.confidence_threshold*100:.0f}%\n"
                     else:
-                        models = self.model_manager.find_models_for_instrument(ticker)
-                        if models:
-                            model_path = str(models[0])
-                            self.model_manager.apply_model(ticker, model_path)
-                            model_name = models[0].stem
-                            ml_settings = self.settings.get_ml_settings_for_instrument(ticker)
-                            status_text += f"Инструмент: {ticker} | Модель: {model_name} (авто)\n"
-                            status_text += f"   🎯 Уверенность: ≥{ml_settings.confidence_threshold*100:.0f}%\n"
-                        else:
-                            status_text += f"Инструмент: {ticker} | Модель: ❌ Не найдена\n"
+                        status_text += f"Инструмент: {ticker} | Модель: ❌ Не найдена\n"
                 
                 # Показываем рассчитанную маржу
                 margin_per_lot = self.state.instrument_margins.get(ticker)
@@ -866,44 +870,44 @@ class TelegramBot:
         """Показывает настройки инструментов."""
         try:
             logger.debug("show_instruments_settings: Starting...")
-            # Получаем все известные инструменты
-            all_possible = list(set(self.state.known_instruments + self.state.active_instruments))
-            all_possible = sorted(all_possible)
+        # Получаем все известные инструменты
+        all_possible = list(set(self.state.known_instruments + self.state.active_instruments))
+        all_possible = sorted(all_possible)
             logger.debug(f"show_instruments_settings: Found {len(all_possible)} instruments")
+        
+        keyboard = []
+        for ticker in all_possible:
+            status = "✅" if ticker in self.state.active_instruments else "❌"
+            button_text = f"{status} {ticker}"
             
-            keyboard = []
-            for ticker in all_possible:
-                status = "✅" if ticker in self.state.active_instruments else "❌"
-                button_text = f"{status} {ticker}"
-                
-                # Проверяем cooldown
-                if hasattr(self.state, 'get_cooldown_info'):
-                    cooldown_info = self.state.get_cooldown_info(ticker)
-                    if cooldown_info and cooldown_info.get("active"):
-                        hours_left = cooldown_info.get("hours_left", 0)
-                        if hours_left < 1:
-                            minutes_left = int(hours_left * 60)
-                            button_text += f" ❄️({minutes_left}м)"
-                        else:
-                            button_text += f" ❄️({hours_left:.1f}ч)"
-                
-                keyboard.append([InlineKeyboardButton(button_text, callback_data=f"toggle_{ticker}")])
-                
-                # Кнопка снятия cooldown
-                if hasattr(self.state, 'get_cooldown_info'):
-                    cooldown_info = self.state.get_cooldown_info(ticker)
-                    if cooldown_info and cooldown_info.get("active"):
-                        keyboard.append([InlineKeyboardButton(
-                            f"🔥 Снять разморозку {ticker}",
-                            callback_data=f"remove_cooldown_{ticker}"
-                        )])
+            # Проверяем cooldown
+            if hasattr(self.state, 'get_cooldown_info'):
+                cooldown_info = self.state.get_cooldown_info(ticker)
+                if cooldown_info and cooldown_info.get("active"):
+                    hours_left = cooldown_info.get("hours_left", 0)
+                    if hours_left < 1:
+                        minutes_left = int(hours_left * 60)
+                        button_text += f" ❄️({minutes_left}м)"
+                    else:
+                        button_text += f" ❄️({hours_left:.1f}ч)"
             
-            keyboard.append([InlineKeyboardButton("➕ Добавить новый инструмент", callback_data="add_ticker")])
-            keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="status_info")])
-            keyboard.append([InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")])
+            keyboard.append([InlineKeyboardButton(button_text, callback_data=f"toggle_{ticker}")])
             
+            # Кнопка снятия cooldown
+            if hasattr(self.state, 'get_cooldown_info'):
+                cooldown_info = self.state.get_cooldown_info(ticker)
+                if cooldown_info and cooldown_info.get("active"):
+                    keyboard.append([InlineKeyboardButton(
+                        f"🔥 Снять разморозку {ticker}",
+                        callback_data=f"remove_cooldown_{ticker}"
+                    )])
+        
+        keyboard.append([InlineKeyboardButton("➕ Добавить новый инструмент", callback_data="add_ticker")])
+        keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="status_info")])
+        keyboard.append([InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")])
+        
             logger.debug(f"show_instruments_settings: Sending message with {len(keyboard)} buttons")
-            await self.safe_edit_message(query, "⚙️ Настройка активных инструментов (макс 5):", reply_markup=InlineKeyboardMarkup(keyboard))
+        await self.safe_edit_message(query, "⚙️ Настройка активных инструментов (макс 5):", reply_markup=InlineKeyboardMarkup(keyboard))
             logger.debug("show_instruments_settings: Completed successfully")
         except Exception as e:
             logger.error(f"Error in show_instruments_settings: {e}", exc_info=True)
@@ -950,10 +954,10 @@ class TelegramBot:
                 try:
                     instrument_info = await asyncio.wait_for(
                         asyncio.to_thread(
-                            self.tinkoff.find_instrument,
-                            ticker,
-                            instrument_type="futures",
-                            prefer_perpetual=False
+                    self.tinkoff.find_instrument,
+                    ticker,
+                    instrument_type="futures",
+                    prefer_perpetual=False
                         ),
                         timeout=30.0
                     )
@@ -980,11 +984,11 @@ class TelegramBot:
                 try:
                     await asyncio.wait_for(
                         asyncio.to_thread(
-                            self.storage.save_instrument,
-                            figi=instrument_info["figi"],
-                            ticker=ticker,
-                            name=instrument_info["name"],
-                            instrument_type=instrument_info.get("instrument_type", "futures")
+                    self.storage.save_instrument,
+                    figi=instrument_info["figi"],
+                    ticker=ticker,
+                    name=instrument_info["name"],
+                    instrument_type=instrument_info.get("instrument_type", "futures")
                         ),
                         timeout=10.0
                     )
@@ -2591,6 +2595,6 @@ class TelegramBot:
         except Exception as e:
             logger.error(f"[retrain_models_async] Error retraining models for {ticker}: {e}", exc_info=True)
             try:
-                await self.send_notification(f"❌ Ошибка при обучении моделей для {ticker}: {str(e)}", user_id)
+            await self.send_notification(f"❌ Ошибка при обучении моделей для {ticker}: {str(e)}", user_id)
             except Exception as send_error:
                 logger.error(f"[retrain_models_async] Error sending Telegram message: {send_error}")

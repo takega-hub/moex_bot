@@ -193,9 +193,23 @@ def analyze_margin_formula(ticker: str = None, known_margin: float = None):
                             api_margin_fields[attr_name] = str(attr_value)[:100]
                     
                     # Ищем поля, связанные со стоимостью пункта
+                    # ВАЖНО: Для некоторых инструментов min_price_increment может быть 0 или неправильным
+                    # Поэтому проверяем все поля, связанные со стоимостью пункта
                     if any(kw in attr_lower for kw in ['point', 'tick', 'step', 'increment', 'value']) and 'price' in attr_lower:
-                        if extracted is not None and extracted > 0:
+                        if extracted is not None:
+                            # Сохраняем даже если 0, чтобы видеть, что поле есть
                             api_point_value_fields[attr_name] = extracted
+                            # Дополнительно проверяем, если это min_price_increment и он равен 0
+                            if attr_name == 'min_price_increment' and extracted == 0:
+                                # Пробуем извлечь значение другим способом
+                                try:
+                                    if hasattr(attr_value, 'units'):
+                                        units_val = float(attr_value.units) if attr_value.units else 0
+                                        nano_val = float(attr_value.nano) / 1e9 if hasattr(attr_value, 'nano') and attr_value.nano else 0
+                                        if units_val > 0 or nano_val > 0:
+                                            api_point_value_fields[attr_name] = units_val + nano_val
+                                except:
+                                    pass
                 except:
                     pass
             
@@ -321,15 +335,34 @@ def analyze_margin_formula(ticker: str = None, known_margin: float = None):
                     print(f"      {field_name:30s} = {field_value:>15.2f} ₽")
                     # Используем min_price_increment как стоимость пункта
                     if field_name == 'min_price_increment':
-                        data["point_value"] = field_value
-                        print(f"      ✅ Используем min_price_increment как стоимость пункта!")
+                        if field_value == 0:
+                            print(f"      ⚠️ min_price_increment из API = 0 (неверно!)")
+                            # Проверяем, есть ли значение в словаре POINT_VALUE
+                            point_value_from_dict = POINT_VALUE.get(ticker_name)
+                            if point_value_from_dict:
+                                data["point_value"] = point_value_from_dict
+                                print(f"      ✅ Используем стоимость пункта из словаря POINT_VALUE: {point_value_from_dict:.2f} ₽")
+                            else:
+                                print(f"      💡 Добавьте правильное значение в словарь POINT_VALUE для {ticker_name}")
+                        else:
+                            data["point_value"] = field_value
+                            print(f"      ✅ Используем min_price_increment как стоимость пункта!")
                 else:
                     print(f"      {field_name:30s} = {field_value}")
         
-        # Используем point_value_from_api, если он есть
+        # Используем point_value_from_api, если он есть и не равен 0
         if data.get('point_value_from_api') and not data.get('point_value'):
-            data["point_value"] = data['point_value_from_api']
-            print(f"\n   ✅ Используем стоимость пункта из API: {data['point_value_from_api']:.2f} ₽")
+            if data['point_value_from_api'] > 0:
+                data["point_value"] = data['point_value_from_api']
+                print(f"\n   ✅ Используем стоимость пункта из API: {data['point_value_from_api']:.2f} ₽")
+            else:
+                # Если из API получили 0, проверяем словарь
+                point_value_from_dict = POINT_VALUE.get(ticker_name)
+                if point_value_from_dict:
+                    data["point_value"] = point_value_from_dict
+                    print(f"\n   ⚠️ min_price_increment из API = 0, используем словарь POINT_VALUE: {point_value_from_dict:.2f} ₽")
+                else:
+                    print(f"\n   ⚠️ min_price_increment из API = 0, и нет значения в словаре POINT_VALUE для {ticker_name}")
         
         # Специальный анализ для VBH6 (данные из терминала)
         if ticker_name == "VBH6":
