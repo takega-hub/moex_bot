@@ -165,6 +165,30 @@ async def main():
             logger.error(f"Failed to initialize TradingLoop: {e}", exc_info=True)
             raise
         
+        # Calculate margins for active instruments at startup
+        if state.active_instruments:
+            try:
+                from data.storage import DataStorage
+                from bot.margin_calculator import calculate_margins_for_instruments
+                
+                storage = DataStorage()
+                logger.info("📊 Calculating margins for active instruments at startup...")
+                
+                # Выполняем расчет маржи асинхронно
+                margins = await calculate_margins_for_instruments(
+                    tinkoff=tinkoff,
+                    storage=storage,
+                    instruments=state.active_instruments
+                )
+                
+                # Сохраняем рассчитанные значения маржи в state
+                state.instrument_margins = margins
+                state.save()
+                
+                logger.info(f"✅ Margins calculated and saved for {len(margins)} instruments")
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to calculate margins at startup: {e}", exc_info=True)
+        
         # Run components
         try:
             await asyncio.gather(

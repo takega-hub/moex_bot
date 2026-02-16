@@ -71,6 +71,9 @@ class BotState:
         # Cooldowns
         self.cooldowns: Dict[str, InstrumentCooldown] = {}
         
+        # Instrument margins (calculated at startup)
+        self.instrument_margins: Dict[str, float] = {}  # ticker -> margin_per_lot
+        
         self.load()
     
     def load(self):
@@ -88,6 +91,7 @@ class BotState:
                 self.active_instruments = data.get("active_instruments", [])
                 self.known_instruments = data.get("known_instruments", [])
                 self.instrument_models = data.get("instrument_models", {})
+                self.instrument_margins = data.get("instrument_margins", {})
                 
                 # Load trades
                 trades_data = data.get("trades", [])
@@ -140,6 +144,7 @@ class BotState:
                     "active_instruments": self.active_instruments,
                     "known_instruments": self.known_instruments,
                     "instrument_models": self.instrument_models,
+                    "instrument_margins": self.instrument_margins,
                     "trades": [asdict(t) for t in self.trades[-500:]],
                     "signals": [asdict(s) for s in self.signals[-1000:]],
                     "cooldowns": {instrument: asdict(cooldown) for instrument, cooldown in self.cooldowns.items()}

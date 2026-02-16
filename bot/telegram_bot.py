@@ -459,9 +459,10 @@ class TelegramBot:
                     except:
                         pass
                     
-                    # Получаем dlong/dshort из API (если доступно)
+                    # Получаем dlong/dshort и min_price_increment из API (если доступно)
                     api_dlong = None
                     api_dshort = None
+                    min_price_increment = None
                     try:
                         inst_info = await asyncio.wait_for(
                             asyncio.to_thread(self.tinkoff.get_instrument_info, figi),
@@ -470,59 +471,102 @@ class TelegramBot:
                         if inst_info:
                             api_dlong = inst_info.get('dlong')
                             api_dshort = inst_info.get('dshort')
+                            min_price_increment = inst_info.get('min_price_increment')
                     except:
                         pass
                     
                     # Рассчитываем маржу для LONG и SHORT (берем большее значение)
-                    margin_long = get_margin_for_position(
-                        ticker=ticker,
-                        quantity=1.0,
-                        entry_price=current_price,
-                        lot_size=lot_size,
-                        dlong=api_dlong,
-                        dshort=api_dshort,
-                        is_long=True
-                    )
+                    from bot.margin_rates import get_margin_per_lot_from_api_data
                     
-                    margin_short = get_margin_for_position(
-                        ticker=ticker,
-                        quantity=1.0,
-                        entry_price=current_price,
-                        lot_size=lot_size,
-                        dlong=api_dlong,
-                        dshort=api_dshort,
-                        is_long=False
-                    )
+                    margin_for_1_lot = None
                     
-                    # Берем максимальную маржу (LONG или SHORT)
-                    margin_for_1_lot = max(margin_long, margin_short) if margin_long > 0 and margin_short > 0 else (margin_long if margin_long > 0 else margin_short)
+                    # Сначала пробуем через min_price_increment (если доступно)
+                    if min_price_increment and min_price_increment > 0:
+                        margin_long = get_margin_per_lot_from_api_data(
+                            ticker=ticker,
+                            current_price=current_price,
+                            point_value=min_price_increment,
+                            dlong=api_dlong,
+                            dshort=api_dshort,
+                            is_long=True
+                        )
+                        margin_short = get_margin_per_lot_from_api_data(
+                            ticker=ticker,
+                            current_price=current_price,
+                            point_value=min_price_increment,
+                            dlong=api_dlong,
+                            dshort=api_dshort,
+                            is_long=False
+                        )
+                        if margin_long or margin_short:
+                            margin_for_1_lot = max(margin_long or 0, margin_short or 0) if (margin_long and margin_short) else (margin_long or margin_short or 0)
+                    
+                    # Если не получилось через min_price_increment, используем стандартную функцию
+                    if not margin_for_1_lot or margin_for_1_lot <= 0:
+                        margin_long = get_margin_for_position(
+                            ticker=ticker,
+                            quantity=1.0,
+                            entry_price=current_price,
+                            lot_size=lot_size,
+                            dlong=api_dlong,
+                            dshort=api_dshort,
+                            is_long=True
+                        )
+                        
+                        margin_short = get_margin_for_position(
+                            ticker=ticker,
+                            quantity=1.0,
+                            entry_price=current_price,
+                            lot_size=lot_size,
+                            dlong=api_dlong,
+                            dshort=api_dshort,
+                            is_long=False
+                        )
+                        
+                        # Берем максимальную маржу (LONG или SHORT)
+                        margin_for_1_lot = max(margin_long, margin_short) if margin_long > 0 and margin_short > 0 else (margin_long if margin_long > 0 else margin_short)
+                    
+                    # Рассчитываем стоимость лота
+                    lot_value = current_price * lot_size
+                    
+                    # ВАЖНО: Для открытия позиции нужно ГО + стоимость лота
+                    total_required = margin_for_1_lot + lot_value if margin_for_1_lot > 0 else lot_value
                     
                     if margin_for_1_lot > 0:
                         instrument_margins.append({
                             "ticker": ticker,
                             "margin": margin_for_1_lot,
+                            "lot_value": lot_value,
+                            "total_required": total_required,
                             "price": current_price
                         })
-                        min_margin_total = max(min_margin_total, margin_for_1_lot)
+                        min_margin_total = max(min_margin_total, total_required)
                 
-                # Сортируем по марже (от большего к меньшему)
-                instrument_margins.sort(key=lambda x: x["margin"], reverse=True)
+                # Сортируем по общей требуемой сумме (ГО + стоимость лота) от большего к меньшему
+                instrument_margins.sort(key=lambda x: x["total_required"], reverse=True)
                 
                 # Выводим информацию
                 for inst_margin in instrument_margins:
                     ticker = inst_margin["ticker"]
                     margin = inst_margin["margin"]
+                    lot_value = inst_margin["lot_value"]
+                    total_required = inst_margin["total_required"]
                     price = inst_margin["price"]
                     
-                    # Проверяем, достаточно ли баланса
-                    if wallet_balance >= margin:
+                    # Проверяем, достаточно ли баланса (ГО + стоимость лота)
+                    if wallet_balance >= total_required:
                         status_emoji = "✅"
-                        max_lots = int(wallet_balance / margin)
-                        status_text += f"{status_emoji} {ticker}: {margin:.2f} ₽/лот (до {max_lots} лот)\n"
+                        # Рассчитываем максимальное количество лотов с учетом ГО + стоимости лота
+                        max_lots = int(wallet_balance / total_required)
+                        status_text += f"{status_emoji} {ticker}: {total_required:.2f} ₽/лот "
+                        status_text += f"(ГО: {margin:.2f} ₽ + лот: {lot_value:.2f} ₽) "
+                        status_text += f"(до {max_lots} лот)\n"
                     else:
                         status_emoji = "❌"
-                        shortage = margin - wallet_balance
-                        status_text += f"{status_emoji} {ticker}: {margin:.2f} ₽/лот (не хватает {shortage:.2f} ₽)\n"
+                        shortage = total_required - wallet_balance
+                        status_text += f"{status_emoji} {ticker}: {total_required:.2f} ₽/лот "
+                        status_text += f"(ГО: {margin:.2f} ₽ + лот: {lot_value:.2f} ₽) "
+                        status_text += f"(не хватает {shortage:.2f} ₽)\n"
                 
                 if min_margin_total > 0:
                     status_text += f"\n💡 Минимальный баланс для торговли: {min_margin_total:.2f} ₽\n"
@@ -569,6 +613,11 @@ class TelegramBot:
                         if mtf_models.get("model_1h") and mtf_models.get("model_15m"):
                             status_text += f"Инструмент: {ticker} | MTF: {mtf_models['model_1h']} + {mtf_models['model_15m']}\n"
                             status_text += f"   🎯 Уверенность: 1h≥{self.settings.ml_strategy.mtf_confidence_threshold_1h*100:.0f}%, 15m≥{self.settings.ml_strategy.mtf_confidence_threshold_15m*100:.0f}%\n"
+                            
+                            # Показываем рассчитанную маржу
+                            margin_per_lot = self.state.instrument_margins.get(ticker)
+                            if margin_per_lot and margin_per_lot > 0:
+                                status_text += f"   💰 Маржа: {margin_per_lot:.2f} ₽/лот\n"
                         else:
                             status_text += f"Инструмент: {ticker} | MTF: ⚠️ Модели не выбраны\n"
                 
@@ -591,6 +640,11 @@ class TelegramBot:
                             status_text += f"   🎯 Уверенность: ≥{ml_settings.confidence_threshold*100:.0f}%\n"
                         else:
                             status_text += f"Инструмент: {ticker} | Модель: ❌ Не найдена\n"
+                
+                # Показываем рассчитанную маржу
+                margin_per_lot = self.state.instrument_margins.get(ticker)
+                if margin_per_lot and margin_per_lot > 0:
+                    status_text += f"   💰 Маржа: {margin_per_lot:.2f} ₽/лот\n"
                 
                 # Cooldown
                 cooldown_info = self.state.get_cooldown_info(ticker) if hasattr(self.state, 'get_cooldown_info') else None

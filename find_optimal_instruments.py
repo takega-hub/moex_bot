@@ -15,12 +15,85 @@ from utils.logger import logger
 load_dotenv()
 
 
-def get_all_futures(client: TinkoffClient) -> List[Dict[str, Any]]:
+def is_metal_future(instrument) -> bool:
     """
-    Get list of all available futures from Tinkoff API.
+    Проверяет, является ли фьючерс фьючерсом на металл.
+    
+    Args:
+        instrument: Объект инструмента из API
+        
+    Returns:
+        True если это фьючерс на металл
+    """
+    name_lower = instrument.name.lower()
+    ticker_upper = instrument.ticker.upper()
+    basic_asset = getattr(instrument, 'basic_asset', '').lower()
+    
+    # Ключевые слова для металлов
+    metal_keywords = [
+        'серебро', 'silver', 'silv', 'si-', 's1', 'sv',
+        'золото', 'gold', 'au-', 'gld',
+        'платина', 'platinum', 'plt', 'pt-',
+        'палладий', 'palladium', 'pall', 'pd-',
+        'медь', 'copper', 'cu-',
+        'алюминий', 'aluminum', 'al-'
+    ]
+    
+    # Проверяем по названию, тикеру и базовому активу
+    for keyword in metal_keywords:
+        if keyword in name_lower or keyword in ticker_upper.lower() or keyword in basic_asset:
+            return True
+    
+    return False
+
+
+def is_stock_future(instrument) -> bool:
+    """
+    Проверяет, является ли фьючерс фьючерсом на акцию.
+    
+    Args:
+        instrument: Объект инструмента из API
+        
+    Returns:
+        True если это фьючерс на акцию
+    """
+    name_lower = instrument.name.lower()
+    ticker_upper = instrument.ticker.upper()
+    basic_asset = getattr(instrument, 'basic_asset', '').lower()
+    asset_type = getattr(instrument, 'asset_type', '').lower()
+    
+    # Фьючерсы на акции обычно имеют asset_type = 'share' или содержат тикер акции
+    if asset_type == 'share' or 'акция' in name_lower:
+        return True
+    
+    # Популярные тикеры акций на MOEX
+    stock_tickers = [
+        'SBER', 'GAZP', 'LKOH', 'GMKN', 'NVTK', 'YNDX', 'ROSN',
+        'MGNT', 'TATN', 'SNGS', 'CHMF', 'ALRS', 'PLZL', 'MOEX',
+        'AFKS', 'AFLT', 'AKRN', 'APTK', 'BANE', 'BELU', 'FIVE',
+        'FIXP', 'HYDR', 'IRAO', 'MTSS', 'NLMK', 'POLY', 'RTKM',
+        'SBERP', 'SGZH', 'TRNFP', 'UPRO', 'VTBR', 'FEES', 'PHOR'
+    ]
+    
+    # Проверяем, содержит ли тикер или базовый актив тикер акции
+    for stock_ticker in stock_tickers:
+        if stock_ticker in ticker_upper or stock_ticker in basic_asset.upper():
+            return True
+    
+    return False
+
+
+def get_all_futures(client: TinkoffClient, filter_metals: bool = True, filter_stocks: bool = True) -> List[Dict[str, Any]]:
+    """
+    Get list of available futures from Tinkoff API, filtered by type.
+    
+    Args:
+        client: TinkoffClient instance
+        filter_metals: If True, include metal futures
+        filter_stocks: If True, include stock futures
     
     Returns:
-        List of dictionaries with figi, ticker, name
+        List of dictionaries with figi, ticker, name, basic_asset, asset_type
     """
     futures = []
     try:
@@ -29,13 +102,26 @@ def get_all_futures(client: TinkoffClient) -> List[Dict[str, Any]]:
             response = tinkoff_client.instruments.futures()
             
             for instrument in response.instruments:
-                futures.append({
-                    "figi": instrument.figi,
-                    "ticker": instrument.ticker,
-                    "name": instrument.name
-                })
+                # Пропускаем инструменты, недоступные для торговли через API
+                if not getattr(instrument, 'api_trade_available_flag', False):
+                    continue
+                
+                # Фильтруем по типу
+                is_metal = is_metal_future(instrument)
+                is_stock = is_stock_future(instrument)
+                
+                if (filter_metals and is_metal) or (filter_stocks and is_stock):
+                    futures.append({
+                        "figi": instrument.figi,
+                        "ticker": instrument.ticker,
+                        "name": instrument.name,
+                        "basic_asset": getattr(instrument, 'basic_asset', ''),
+                        "asset_type": getattr(instrument, 'asset_type', ''),
+                        "is_metal": is_metal,
+                        "is_stock": is_stock
+                    })
             
-            logger.info(f"Found {len(futures)} futures")
+            logger.info(f"Found {len(futures)} futures (metals: {sum(1 for f in futures if f['is_metal'])}, stocks: {sum(1 for f in futures if f['is_stock'])})")
     except Exception as e:
         logger.error(f"Error fetching futures: {e}", exc_info=True)
     
@@ -77,28 +163,60 @@ def get_current_price(client: TinkoffClient, figi: str) -> Optional[float]:
 
 def get_instrument_info(client: TinkoffClient, figi: str) -> Dict[str, Any]:
     """
-    Get instrument information (lot size, price step).
+    Get instrument information (lot size, price step, dlong, dshort, min_price_increment).
     
     Args:
         client: TinkoffClient instance
         figi: Instrument FIGI
     
     Returns:
-        Dict with lot_size, price_step
+        Dict with lot_size, price_step, dlong, dshort, min_price_increment
     """
     try:
         lot_size = client.get_qty_step(figi)
         price_step = client.get_price_step(figi)
         
+        # Получаем дополнительную информацию из API (dlong, dshort, min_price_increment)
+        dlong = None
+        dshort = None
+        min_price_increment = None
+        
+        try:
+            with client._get_client() as tinkoff_client:
+                from t_tech.invest import InstrumentIdType
+                response = tinkoff_client.instruments.get_instrument_by(
+                    id_type=InstrumentIdType.INSTRUMENT_ID_TYPE_FIGI,
+                    id=figi
+                )
+                instrument = response.instrument
+                
+                # Извлекаем dlong, dshort
+                if hasattr(instrument, 'dlong') and instrument.dlong:
+                    dlong = float(instrument.dlong.units) + float(instrument.dlong.nano) / 1e9
+                if hasattr(instrument, 'dshort') and instrument.dshort:
+                    dshort = float(instrument.dshort.units) + float(instrument.dshort.nano) / 1e9
+                
+                # Извлекаем min_price_increment (это и есть стоимость пункта)
+                if hasattr(instrument, 'min_price_increment') and instrument.min_price_increment:
+                    min_price_increment = float(instrument.min_price_increment.units) + float(instrument.min_price_increment.nano) / 1e9
+        except Exception as e:
+            logger.debug(f"Could not get additional instrument info for {figi}: {e}")
+        
         return {
             "lot_size": lot_size,
-            "price_step": price_step
+            "price_step": price_step,
+            "dlong": dlong,
+            "dshort": dshort,
+            "min_price_increment": min_price_increment
         }
     except Exception as e:
         logger.warning(f"Error getting instrument info for {figi}: {e}")
         return {
             "lot_size": 1.0,
-            "price_step": 0.01
+            "price_step": 0.01,
+            "dlong": None,
+            "dshort": None,
+            "min_price_increment": None
         }
 
 
@@ -199,6 +317,40 @@ def calculate_avg_volume(df: pd.DataFrame, lot_size: float, current_price: float
         return {"avg_volume_lots": 0.0, "avg_volume_rub": 0.0}
 
 
+def get_account_balance(client: TinkoffClient) -> Optional[float]:
+    """
+    Get account balance from API.
+    
+    Args:
+        client: TinkoffClient instance
+    
+    Returns:
+        Account balance in RUB or None if error
+    """
+    try:
+        with client._get_client() as tinkoff_client:
+            accounts = tinkoff_client.users.get_accounts()
+            if not accounts.accounts:
+                logger.warning("No accounts found")
+                return None
+            
+            account_id = accounts.accounts[0].id
+            portfolio = tinkoff_client.operations.get_portfolio(account_id=account_id)
+            
+            # Получаем общий баланс портфеля
+            if hasattr(portfolio, 'total_amount_portfolio') and portfolio.total_amount_portfolio:
+                balance = float(portfolio.total_amount_portfolio.units) + float(portfolio.total_amount_portfolio.nano) / 1e9
+                return balance
+            
+            # Альтернативный способ - через валюты
+            if hasattr(portfolio, 'total_amount_currencies') and portfolio.total_amount_currencies:
+                balance = float(portfolio.total_amount_currencies.units) + float(portfolio.total_amount_currencies.nano) / 1e9
+                return balance
+    except Exception as e:
+        logger.warning(f"Error getting account balance: {e}")
+    return None
+
+
 def analyze_instrument(
     client: TinkoffClient,
     collector: DataCollector,
@@ -238,6 +390,9 @@ def analyze_instrument(
         info = get_instrument_info(client, figi)
         lot_size = info["lot_size"]
         price_step = info["price_step"]
+        api_dlong = info.get("dlong")
+        api_dshort = info.get("dshort")
+        min_price_increment = info.get("min_price_increment")  # Это стоимость пункта!
         
         # Get current price
         current_price = get_current_price(client, figi)
@@ -245,14 +400,90 @@ def analyze_instrument(
             logger.warning(f"Skipping {ticker}: cannot get current price")
             return None
         
-        # Calculate lot value and margin
+        # Calculate lot value
         lot_value = current_price * lot_size
-        margin_per_lot = lot_value * margin_rate
         
-        # Check margin criterion
+        # Получаем реальную маржу из словаря или рассчитываем
+        from bot.margin_rates import get_margin_for_position, get_margin_per_lot_from_api_data
+        
+        # Пробуем получить ГО за лот используя формулу: point_value * price * dlong/dshort
+        # где point_value = min_price_increment из API
+        margin_per_lot = None
+        
+        # Сначала пробуем через функцию, которая использует min_price_increment
+        if min_price_increment and min_price_increment > 0:
+            # Пробуем для LONG и SHORT, берем максимальную
+            margin_long = get_margin_per_lot_from_api_data(
+                ticker=ticker,
+                current_price=current_price,
+                point_value=min_price_increment,
+                dlong=api_dlong,
+                dshort=api_dshort,
+                is_long=True
+            )
+            margin_short = get_margin_per_lot_from_api_data(
+                ticker=ticker,
+                current_price=current_price,
+                point_value=min_price_increment,
+                dlong=api_dlong,
+                dshort=api_dshort,
+                is_long=False
+            )
+            
+            if margin_long or margin_short:
+                margin_per_lot = max(margin_long or 0, margin_short or 0) if (margin_long and margin_short) else (margin_long or margin_short or 0)
+                if margin_per_lot > 0:
+                    logger.debug(f"{ticker}: Calculated margin via min_price_increment: {margin_per_lot:.2f} ₽")
+        
+        # Если не получилось через min_price_increment, используем стандартную функцию
+        if not margin_per_lot or margin_per_lot <= 0:
+            margin_long = get_margin_for_position(
+                ticker=ticker,
+                quantity=1.0,
+                entry_price=current_price,
+                lot_size=lot_size,
+                dlong=api_dlong,
+                dshort=api_dshort,
+                is_long=True
+            )
+            
+            margin_short = get_margin_for_position(
+                ticker=ticker,
+                quantity=1.0,
+                entry_price=current_price,
+                lot_size=lot_size,
+                dlong=api_dlong,
+                dshort=api_dshort,
+                is_long=False
+            )
+            
+            # Берем максимальную маржу (LONG или SHORT)
+            margin_per_lot = max(margin_long, margin_short) if margin_long > 0 and margin_short > 0 else (margin_long if margin_long > 0 else margin_short)
+        
+        # Если маржа не рассчиталась, используем fallback через процент
+        if margin_per_lot <= 0:
+            margin_per_lot = lot_value * margin_rate
+            logger.debug(f"{ticker}: Using fallback margin calculation: {margin_per_lot:.2f} ₽ ({margin_rate*100:.1f}% of lot value)")
+        
+        # ВАЖНО: Для открытия позиции нужно ГО + стоимость лота
+        # total_required = margin_per_lot (ГО) + lot_value (цена * лотность)
+        total_required = margin_per_lot + lot_value
+        
+        # Проверяем, достаточно ли баланса для открытия хотя бы 1 лота
+        # Проверяем, что ГО + стоимость лота не превышают доступный баланс
+        if total_required > balance:
+            logger.debug(
+                f"Skipping {ticker}: total required {total_required:.2f} ₽ "
+                f"(ГО: {margin_per_lot:.2f} ₽ + стоимость лота: {lot_value:.2f} ₽) > balance {balance:.2f} ₽ "
+                f"(недостаточно баланса для открытия 1 лота)"
+            )
+            return None
+        
+        # Проверяем критерий максимальной маржи (процент от баланса)
+        # Это дополнительная проверка для фильтрации инструментов с высокой маржой
         max_margin = balance * (margin_pct / 100.0)
         if margin_per_lot > max_margin:
-            logger.debug(f"Skipping {ticker}: margin {margin_per_lot:.2f} > max {max_margin:.2f}")
+            logger.debug(f"Skipping {ticker}: margin {margin_per_lot:.2f} ₽ > max {max_margin:.2f} ₽ ({margin_pct}% от баланса)")
             return None
         
         # Collect historical data
@@ -301,6 +532,11 @@ def analyze_instrument(
         volume_score = min(volume_info["avg_volume_rub"] / 1000000.0, 1.0)  # Normalize to 1M RUB
         score = (volume_score * 0.7 + volatility_score * 0.3) * 100
         
+        # Рассчитываем максимальное количество лотов, которое можно открыть
+        # Для каждого лота нужно: ГО + стоимость лота
+        cost_per_lot = margin_per_lot + lot_value
+        max_lots = int(balance / cost_per_lot) if cost_per_lot > 0 else 0
+        
         result = {
             "figi": figi,
             "ticker": ticker,
@@ -311,6 +547,7 @@ def analyze_instrument(
             "lot_value": lot_value,
             "margin_per_lot": margin_per_lot,
             "margin_pct_of_balance": (margin_per_lot / balance) * 100 if balance > 0 else 0,
+            "max_lots_available": max_lots,
             "volatility_pct": volatility,
             "avg_volume_lots": volume_info["avg_volume_lots"],
             "avg_volume_rub": volume_info["avg_volume_rub"],
@@ -374,18 +611,19 @@ def print_results(results: List[Dict[str, Any]]):
     # Print header
     header = (
         f"{'Ticker':<12} {'Price':<10} {'Lot Size':<10} {'Lot Value':<12} "
-        f"{'Margin':<10} {'Margin %':<10} {'Volatility %':<12} "
+        f"{'Margin':<10} {'Margin %':<10} {'Max Lots':<10} {'Volatility %':<12} "
         f"{'Avg Vol (lots)':<15} {'Avg Vol (RUB)':<15} {'Score':<8}"
     )
     print(header)
-    print("-" * 120)
+    print("-" * 140)
     
     # Print rows
     for r in results:
         row = (
             f"{r['ticker']:<12} {r['current_price']:>9.2f} {r['lot_size']:>9.1f} "
             f"{r['lot_value']:>11.2f} {r['margin_per_lot']:>9.2f} "
-            f"{r['margin_pct_of_balance']:>9.1f}% {r['volatility_pct']:>11.2f}% "
+            f"{r['margin_pct_of_balance']:>9.1f}% {r.get('max_lots_available', 0):>9.0f} "
+            f"{r['volatility_pct']:>11.2f}% "
             f"{r['avg_volume_lots']:>14.1f} {r['avg_volume_rub']:>14.0f} "
             f"{r['score']:>7.1f}"
         )
@@ -461,10 +699,36 @@ def main():
         "--margin-rate",
         type=float,
         default=0.15,
-        help="Margin rate for futures (default: 0.15 = 15%%)"
+        help="Margin rate for futures (fallback, default: 0.15 = 15%%)"
+    )
+    parser.add_argument(
+        "--filter-metals",
+        action="store_true",
+        default=True,
+        help="Include metal futures (default: True)"
+    )
+    parser.add_argument(
+        "--filter-stocks",
+        action="store_true",
+        default=True,
+        help="Include stock futures (default: True)"
+    )
+    parser.add_argument(
+        "--no-metals",
+        action="store_true",
+        help="Exclude metal futures"
+    )
+    parser.add_argument(
+        "--no-stocks",
+        action="store_true",
+        help="Exclude stock futures"
     )
     
     args = parser.parse_args()
+    
+    # Обрабатываем флаги исключения
+    filter_metals = args.filter_metals and not args.no_metals
+    filter_stocks = args.filter_stocks and not args.no_stocks
     
     # Generate output filename if not provided
     if args.output is None:
@@ -478,9 +742,16 @@ def main():
     print(f"Max margin per lot: {args.margin_pct}% of balance = {args.balance * args.margin_pct / 100:.2f} RUB")
     print(f"Volatility range: {args.volatility_min}% - {args.volatility_max}%")
     print(f"Analysis period: {args.period_days} days")
-    print(f"Margin rate: {args.margin_rate * 100:.1f}%")
+    print(f"Margin rate (fallback): {args.margin_rate * 100:.1f}%")
+    print(f"Filter metals: {filter_metals}")
+    print(f"Filter stocks: {filter_stocks}")
     print(f"Max results: {args.limit}")
     print("="*120 + "\n")
+    
+    # Проверяем, что выбран хотя бы один тип
+    if not filter_metals and not filter_stocks:
+        print("❌ Error: At least one filter type (metals or stocks) must be enabled")
+        return
     
     # Initialize clients
     try:
@@ -491,8 +762,19 @@ def main():
         print(f"❌ Error: {e}")
         return
     
-    # Get all futures
-    futures = get_all_futures(client)
+    # Получаем баланс из API, если не указан
+    if args.balance is None:
+        print("📊 Получение баланса из API...")
+        balance_from_api = get_account_balance(client)
+        if balance_from_api is not None and balance_from_api > 0:
+            args.balance = balance_from_api
+            print(f"✅ Баланс из API: {args.balance:.2f} RUB")
+        else:
+            print("⚠️ Не удалось получить баланс из API, используем значение по умолчанию: 5000 RUB")
+            args.balance = 5000.0
+    
+    # Get filtered futures
+    futures = get_all_futures(client, filter_metals=filter_metals, filter_stocks=filter_stocks)
     if not futures:
         print("❌ No futures found or error fetching futures")
         return
