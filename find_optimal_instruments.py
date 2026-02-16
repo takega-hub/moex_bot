@@ -131,6 +131,7 @@ def get_all_futures(client: TinkoffClient, filter_metals: bool = True, filter_st
 def get_current_price(client: TinkoffClient, figi: str) -> Optional[float]:
     """
     Get current price for instrument by fetching last candle.
+    Использует приоритет: 1min -> 5min -> 15min -> 1hour для получения самой свежей цены.
     
     Args:
         client: TinkoffClient instance
@@ -140,19 +141,26 @@ def get_current_price(client: TinkoffClient, figi: str) -> Optional[float]:
         Current price or None if error
     """
     try:
-        # Get last few candles to get current price
+        # Получаем последние свечи для самой актуальной цены
         to_date = datetime.now()
-        from_date = to_date - timedelta(days=1)
+        from_date = to_date - timedelta(hours=2)  # Достаточно 2 часов для получения свежих данных
         
-        candles = client.get_candles(figi, from_date, to_date, interval="1hour")
-        if candles:
-            # Use last candle's close price
-            return candles[-1]["close"]
+        # Приоритет: сначала 1-минутные свечи (самые свежие)
+        intervals = ["1min", "5min", "15min", "1hour"]
         
-        # Try with 15min interval if hourly failed
-        candles = client.get_candles(figi, from_date, to_date, interval="15min")
-        if candles:
-            return candles[-1]["close"]
+        for interval in intervals:
+            try:
+                candles = client.get_candles(figi, from_date, to_date, interval=interval)
+                if candles:
+                    # Используем последнюю свечу (самую свежую)
+                    last_candle = candles[-1]
+                    price = last_candle["close"]
+                    if price and price > 0:
+                        logger.debug(f"Got current price for {figi} from {interval} candles: {price:.2f}")
+                        return price
+            except Exception as e:
+                logger.debug(f"Failed to get {interval} candles for {figi}: {e}")
+                continue
         
         logger.warning(f"No candles found for {figi} to get current price")
         return None
@@ -358,11 +366,12 @@ def analyze_instrument(
     ticker: str,
     name: str,
     balance: float,
-    margin_pct: float,
+    max_margin: float,
     volatility_min: float,
     volatility_max: float,
     period_days: int,
-    margin_rate: float = 0.15
+    stats: Optional[Dict[str, int]] = None,
+    check_volatility: bool = True
 ) -> Optional[Dict[str, Any]]:
     """
     Analyze single instrument.
@@ -374,18 +383,22 @@ def analyze_instrument(
         ticker: Instrument ticker
         name: Instrument name
         balance: Account balance in RUB
-        margin_pct: Maximum margin percentage of balance
+        max_margin: Maximum margin (GO) in RUB per lot
         volatility_min: Minimum volatility threshold
         volatility_max: Maximum volatility threshold
         period_days: Analysis period in days
-        margin_rate: Margin rate for futures (default 0.15 = 15%)
+        stats: Optional dictionary to collect statistics
+        check_volatility: If False, skip volatility filtering
     
     Returns:
         Dict with analysis results or None if doesn't meet criteria
     """
     try:
-        logger.info(f"Analyzing {ticker} ({figi})...")
+        logger.info(f"🔍 Analyzing {ticker} ({figi})...")
         
+        # ========================================================================
+        # ШАГ 1: Получение базовой информации об инструменте
+        # ========================================================================
         # Get instrument info
         info = get_instrument_info(client, figi)
         lot_size = info["lot_size"]
@@ -397,20 +410,23 @@ def analyze_instrument(
         # Get current price
         current_price = get_current_price(client, figi)
         if current_price is None or current_price <= 0:
-            logger.warning(f"Skipping {ticker}: cannot get current price")
+            logger.warning(f"❌ {ticker}: cannot get current price - пропускаем")
+            if stats is not None:
+                stats["no_price"] += 1
             return None
         
         # Calculate lot value
         lot_value = current_price * lot_size
         
-        # Получаем реальную маржу из словаря или рассчитываем
-        from bot.margin_rates import get_margin_for_position, get_margin_per_lot_from_api_data
+        # ========================================================================
+        # ШАГ 2: Расчет ГО (гарантийного обеспечения) - ТОЛЬКО ФОРМУЛА
+        # ========================================================================
+        from bot.margin_rates import get_margin_per_lot_from_api_data
         
-        # Пробуем получить ГО за лот используя формулу: point_value * price * dlong/dshort
+        # Расчет ГО только через формулу: point_value * price * dlong/dshort
         # где point_value = min_price_increment из API
         margin_per_lot = None
         
-        # Сначала пробуем через функцию, которая использует min_price_increment
         if min_price_increment and min_price_increment > 0:
             # Пробуем для LONG и SHORT, берем максимальную
             margin_long = get_margin_per_lot_from_api_data(
@@ -433,64 +449,71 @@ def analyze_instrument(
             if margin_long or margin_short:
                 margin_per_lot = max(margin_long or 0, margin_short or 0) if (margin_long and margin_short) else (margin_long or margin_short or 0)
                 if margin_per_lot > 0:
-                    logger.debug(f"{ticker}: Calculated margin via min_price_increment: {margin_per_lot:.2f} ₽")
+                    logger.info(f"{ticker}: ✅ Calculated margin via formula: {margin_per_lot:.2f} ₽ (formula: {min_price_increment} × {current_price:.2f} × {api_dshort or api_dlong})")
+            else:
+                # Если формула не сработала, логируем причину и пропускаем инструмент
+                logger.warning(
+                    f"❌ {ticker}: Не удалось рассчитать ГО по формуле - "
+                    f"margin_long={margin_long}, margin_short={margin_short}, "
+                    f"dlong={api_dlong}, dshort={api_dshort}, point_value={min_price_increment}. "
+                    f"Инструмент пропускается."
+                )
         
-        # Если не получилось через min_price_increment, используем стандартную функцию
+        # Если ГО не рассчиталось по формуле, пропускаем инструмент
         if not margin_per_lot or margin_per_lot <= 0:
-            margin_long = get_margin_for_position(
-                ticker=ticker,
-                quantity=1.0,
-                entry_price=current_price,
-                lot_size=lot_size,
-                dlong=api_dlong,
-                dshort=api_dshort,
-                is_long=True
+            logger.warning(
+                f"❌ {ticker}: ГО не рассчитано по формуле. "
+                f"Требуются: min_price_increment={min_price_increment}, "
+                f"dlong={api_dlong}, dshort={api_dshort}, current_price={current_price}. "
+                f"Инструмент пропускается."
             )
-            
-            margin_short = get_margin_for_position(
-                ticker=ticker,
-                quantity=1.0,
-                entry_price=current_price,
-                lot_size=lot_size,
-                dlong=api_dlong,
-                dshort=api_dshort,
-                is_long=False
-            )
-            
-            # Берем максимальную маржу (LONG или SHORT)
-            margin_per_lot = max(margin_long, margin_short) if margin_long > 0 and margin_short > 0 else (margin_long if margin_long > 0 else margin_short)
-        
-        # Если маржа не рассчиталась, используем fallback через процент
-        if margin_per_lot <= 0:
-            margin_per_lot = lot_value * margin_rate
-            logger.debug(f"{ticker}: Using fallback margin calculation: {margin_per_lot:.2f} ₽ ({margin_rate*100:.1f}% of lot value)")
-        
-        # ВАЖНО: Для открытия позиции нужно ГО + стоимость лота
-        # total_required = margin_per_lot (ГО) + lot_value (цена * лотность)
-        total_required = margin_per_lot + lot_value
-        
-        # Проверяем, достаточно ли баланса для открытия хотя бы 1 лота
-        # Проверяем, что ГО + стоимость лота не превышают доступный баланс
-        if total_required > balance:
-            logger.debug(
-                f"Skipping {ticker}: total required {total_required:.2f} ₽ "
-                f"(ГО: {margin_per_lot:.2f} ₽ + стоимость лота: {lot_value:.2f} ₽) > balance {balance:.2f} ₽ "
-                f"(недостаточно баланса для открытия 1 лота)"
-            )
+            if stats is not None:
+                stats["no_margin_calc"] += 1
             return None
         
-        # Проверяем критерий максимальной маржи (процент от баланса)
-        # Это дополнительная проверка для фильтрации инструментов с высокой маржой
-        max_margin = balance * (margin_pct / 100.0)
+        # ========================================================================
+        # ФИЛЬТРАЦИЯ ПО ГО И БАЛАНСУ (В ПЕРВУЮ ОЧЕРЕДЬ)
+        # ========================================================================
+        # ВАЖНО: Для фьючерсов нужно только ГО (гарантийное обеспечение)
+        # Стоимость лота (lot_value) НЕ блокируется на счете - это только расчетная стоимость позиции
+        # Для открытия позиции требуется только ГО
+        
+        # Проверка 1: Достаточно ли баланса для открытия хотя бы 1 лота?
+        if margin_per_lot > balance:
+            logger.info(
+                f"❌ {ticker}: Фильтр по ГО/балансу НЕ ПРОЙДЕН - "
+                f"ГО {margin_per_lot:.2f} ₽ > баланс {balance:.2f} ₽ "
+                f"(недостаточно баланса для открытия 1 лота). "
+                f"Стоимость лота: {lot_value:.2f} ₽ (не блокируется, только для справки)"
+            )
+            if stats is not None:
+                stats["margin_too_high"] += 1
+            return None
+        
+        # Проверка 2: ГО не превышает максимальное значение?
         if margin_per_lot > max_margin:
-            logger.debug(f"Skipping {ticker}: margin {margin_per_lot:.2f} ₽ > max {max_margin:.2f} ₽ ({margin_pct}% от баланса)")
+            logger.info(
+                f"❌ {ticker}: Фильтр по ГО/балансу НЕ ПРОЙДЕН - "
+                f"ГО {margin_per_lot:.2f} ₽ > максимальная маржа {max_margin:.2f} ₽"
+            )
+            if stats is not None:
+                stats["margin_exceeds_limit"] += 1
             return None
         
-        # Collect historical data
+        # Если обе проверки пройдены, продолжаем анализ
+        logger.info(
+            f"✅ {ticker}: Фильтр по ГО/балансу ПРОЙДЕН - "
+            f"ГО {margin_per_lot:.2f} ₽ ({margin_per_lot/balance*100:.1f}% от баланса), "
+            f"максимум лотов: {int(balance / margin_per_lot)}"
+        )
+        
+        # ========================================================================
+        # ШАГ 3: Сбор исторических данных (только для прошедших фильтр по ГО)
+        # ========================================================================
         to_date = datetime.now()
         from_date = to_date - timedelta(days=period_days)
         
-        logger.debug(f"Collecting historical data for {ticker} from {from_date.date()} to {to_date.date()}")
+        logger.debug(f"📊 Collecting historical data for {ticker} from {from_date.date()} to {to_date.date()}")
         candles = collector.collect_candles(
             figi=figi,
             from_date=from_date,
@@ -501,6 +524,8 @@ def analyze_instrument(
         
         if not candles or len(candles) < 10:
             logger.warning(f"Skipping {ticker}: insufficient historical data ({len(candles) if candles else 0} candles)")
+            if stats is not None:
+                stats["insufficient_data"] += 1
             return None
         
         # Convert to DataFrame
@@ -516,10 +541,13 @@ def analyze_instrument(
         # Calculate volatility
         volatility = calculate_volatility(df, current_price)
         
-        # Check volatility criterion
-        if volatility < volatility_min or volatility > volatility_max:
-            logger.debug(f"Skipping {ticker}: volatility {volatility:.2f}% not in range [{volatility_min}, {volatility_max}]")
-            return None
+        # Check volatility criterion (if enabled)
+        if check_volatility:
+            if volatility < volatility_min or volatility > volatility_max:
+                logger.info(f"❌ {ticker}: Волатильность {volatility:.2f}% вне диапазона [{volatility_min}%, {volatility_max}%]")
+                if stats is not None:
+                    stats["volatility_out_of_range"] += 1
+                return None
         
         # Calculate average volume
         volume_info = calculate_avg_volume(df, lot_size, current_price)
@@ -533,9 +561,9 @@ def analyze_instrument(
         score = (volume_score * 0.7 + volatility_score * 0.3) * 100
         
         # Рассчитываем максимальное количество лотов, которое можно открыть
-        # Для каждого лота нужно: ГО + стоимость лота
-        cost_per_lot = margin_per_lot + lot_value
-        max_lots = int(balance / cost_per_lot) if cost_per_lot > 0 else 0
+        # Для каждого лота нужно только ГО (гарантийное обеспечение)
+        # Стоимость лота не блокируется на счете - это только расчетная стоимость позиции
+        max_lots = int(balance / margin_per_lot) if margin_per_lot > 0 else 0
         
         result = {
             "figi": figi,
@@ -662,20 +690,31 @@ def main():
     parser.add_argument(
         "--margin-pct",
         type=float,
-        default=25.0,
-        help="Maximum margin percentage of balance per lot (default: 25)"
+        default=None,
+        help="Maximum margin percentage of balance per lot (default: calculated from --max-margin)"
+    )
+    parser.add_argument(
+        "--max-margin",
+        type=float,
+        default=None,
+        help="Maximum margin (GO) in RUB per lot (default: 25%% of balance)"
     )
     parser.add_argument(
         "--volatility-min",
         type=float,
         default=1.0,
-        help="Minimum daily volatility percentage (default: 1.0)"
+        help="Minimum daily volatility percentage (default: 1.0, use --no-volatility-filter to disable)"
     )
     parser.add_argument(
         "--volatility-max",
         type=float,
         default=5.0,
-        help="Maximum daily volatility percentage (default: 5.0)"
+        help="Maximum daily volatility percentage (default: 5.0, use --no-volatility-filter to disable)"
+    )
+    parser.add_argument(
+        "--no-volatility-filter",
+        action="store_true",
+        help="Disable volatility filtering"
     )
     parser.add_argument(
         "--period-days",
@@ -694,12 +733,6 @@ def main():
         type=int,
         default=50,
         help="Maximum number of results (default: 50)"
-    )
-    parser.add_argument(
-        "--margin-rate",
-        type=float,
-        default=0.15,
-        help="Margin rate for futures (fallback, default: 0.15 = 15%%)"
     )
     parser.add_argument(
         "--filter-metals",
@@ -735,14 +768,28 @@ def main():
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         args.output = f"optimal_instruments_{timestamp}.csv"
     
+    # Calculate max margin
+    if args.max_margin is not None:
+        max_margin = args.max_margin
+        margin_pct = (max_margin / args.balance * 100) if args.balance > 0 else 0
+    elif args.margin_pct is not None:
+        margin_pct = args.margin_pct
+        max_margin = args.balance * (margin_pct / 100.0)
+    else:
+        # Default: 25% of balance
+        margin_pct = 25.0
+        max_margin = args.balance * 0.25
+    
     print("\n" + "="*120)
     print("OPTIMAL INSTRUMENTS FINDER")
     print("="*120)
     print(f"Balance: {args.balance:.2f} RUB")
-    print(f"Max margin per lot: {args.margin_pct}% of balance = {args.balance * args.margin_pct / 100:.2f} RUB")
-    print(f"Volatility range: {args.volatility_min}% - {args.volatility_max}%")
+    print(f"Max margin (GO) per lot: {max_margin:.2f} RUB ({margin_pct:.1f}% of balance)")
+    if args.no_volatility_filter:
+        print(f"Volatility filter: DISABLED")
+    else:
+        print(f"Volatility range: {args.volatility_min}% - {args.volatility_max}%")
     print(f"Analysis period: {args.period_days} days")
-    print(f"Margin rate (fallback): {args.margin_rate * 100:.1f}%")
     print(f"Filter metals: {filter_metals}")
     print(f"Filter stocks: {filter_stocks}")
     print(f"Max results: {args.limit}")
@@ -784,6 +831,16 @@ def main():
     # Analyze each instrument
     results = []
     processed = 0
+    stats = {
+        "no_price": 0,
+        "no_margin_calc": 0,
+        "margin_too_high": 0,
+        "margin_exceeds_limit": 0,
+        "insufficient_data": 0,
+        "volatility_out_of_range": 0,
+        "passed_all_filters": 0
+    }
+    
     for future in futures:
         processed += 1
         print(f"[{processed}/{len(futures)}] ", end="", flush=True)
@@ -795,21 +852,41 @@ def main():
             ticker=future["ticker"],
             name=future["name"],
             balance=args.balance,
-            margin_pct=args.margin_pct,
+            max_margin=max_margin,
             volatility_min=args.volatility_min,
             volatility_max=args.volatility_max,
             period_days=args.period_days,
-            margin_rate=args.margin_rate
+            stats=stats,
+            check_volatility=not args.no_volatility_filter
         )
         
         if result:
             results.append(result)
+            stats["passed_all_filters"] += 1
     
     # Filter and rank
     ranked_results = filter_and_rank_instruments(results, limit=args.limit)
     
     # Print results
     print_results(ranked_results)
+    
+    # Print statistics
+    print(f"\n{'='*120}")
+    print("СТАТИСТИКА ФИЛЬТРАЦИИ:")
+    print(f"{'='*120}")
+    print(f"Всего проанализировано: {len(futures)}")
+    print(f"Прошли все фильтры: {stats['passed_all_filters']}")
+    print(f"Отфильтровано по причине:")
+    print(f"  - Не удалось получить цену: {stats['no_price']}")
+    print(f"  - Не удалось рассчитать ГО: {stats['no_margin_calc']}")
+    print(f"  - ГО превышает баланс: {stats['margin_too_high']}")
+    print(f"  - ГО превышает лимит ({max_margin:.2f} ₽): {stats['margin_exceeds_limit']}")
+    print(f"  - Недостаточно исторических данных: {stats['insufficient_data']}")
+    if not args.no_volatility_filter:
+        print(f"  - Волатильность вне диапазона [{args.volatility_min}%-{args.volatility_max}%]: {stats['volatility_out_of_range']}")
+    else:
+        print(f"  - Фильтр по волатильности: ОТКЛЮЧЕН")
+    print(f"{'='*120}\n")
     
     # Save to CSV
     if ranked_results:

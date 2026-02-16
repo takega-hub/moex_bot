@@ -1,24 +1,20 @@
 """
-Справочник коэффициентов маржи для фьючерсов MOEX.
-ОСНОВНОЙ ИСТОЧНИК - значения из терминала Tinkoff.
+Расчет гарантийного обеспечения (ГО) для фьючерсов MOEX.
 
-ВАЖНО: API возвращает dlong/dshort, но эти значения НЕ соответствуют реальной марже!
-Например, для NGG6:
-- API dlong = 0.33 руб
-- Терминал: гарантийное обеспечение = 7 667,72 ₽ за лот
+ГО рассчитывается по формуле: ГО = point_value × price × dlong/dshort
+где point_value = min_price_increment из API.
 
-Поэтому используем этот словарь как ОСНОВНОЙ источник маржи.
-Значения обновляются вручную из терминала Tinkoff.
+ВАЖНО: Словарь MARGIN_PER_LOT больше не используется в расчетах.
+Все значения рассчитываются динамически из данных API.
 """
 import logging
 from typing import Dict, Optional
 
 logger = logging.getLogger(__name__)
 
-# Справочник гарантийного обеспечения за лот для каждого инструмента (ОСНОВНОЙ ИСТОЧНИК)
-# Значения в рублях за 1 лот
-# ВАЖНО: Это ОСНОВНОЙ источник маржи! API значения (dlong/dshort) НЕВЕРНЫЕ!
-# Значения обновляются вручную из терминала Tinkoff
+# Справочник гарантийного обеспечения за лот (НЕ ИСПОЛЬЗУЕТСЯ в расчетах)
+# Оставлен для совместимости и справки
+# ВАЖНО: Все значения рассчитываются динамически из API через формулу
 MARGIN_PER_LOT: Dict[str, float] = {
     # Фьючерсы на серебро
     "S1H6": 1574.5,  # SILVM-3.26 Серебро (мини) - из терминала (гарантийное обеспечение за лот, лотность=1)
@@ -37,11 +33,12 @@ MARGIN_PER_LOT: Dict[str, float] = {
     "VBH6": 0.0,  # TODO: обновить из терминала
     "SRH6": 0.0,  # TODO: обновить из терминала
     "GLDRUBF": 0.0,  # TODO: обновить из терминала
+    # Фьючерсы на акции Т-Технологии
+    "TBH6": 885.75,  # T-3.26 Т-Технологии - из терминала (гарантийное обеспечение за лот)
 }
 
 # Коэффициенты маржи в процентах от стоимости позиции (fallback)
-# Используются, если нет данных в MARGIN_PER_LOT
-# Значения из optimal_instruments CSV файла
+# Используются, если формула через point_value не работает
 MARGIN_RATE_PCT: Dict[str, float] = {
     "S1H6": 20.2,  # ~1558.96 / (77.19 * 1) * 100 (из терминала)
     "SVH6": 15.0,  # ~11.7 / 78.0 * 100 (из CSV)
@@ -118,16 +115,15 @@ def get_margin_for_position(
     dlong: Optional[float] = None,
     dshort: Optional[float] = None,
     is_long: bool = True,
-    auto_calculate_point_value_flag: bool = True
+    point_value: Optional[float] = None
 ) -> float:
     """
     Получить гарантийное обеспечение для позиции.
     
     Приоритет расчета:
-    1. Справочник MARGIN_PER_LOT (если есть значение)
-    2. Автоматический расчет стоимости пункта из известной маржи похожих инструментов
-    3. Расчет через стоимость пункта: ГО = стоимость_пункта * цена * dlong/dshort
-    4. Процент от стоимости позиции (fallback)
+    1. Расчет через стоимость пункта: ГО = point_value * цена * dlong/dshort (если point_value передан)
+    2. Расчет через POINT_VALUE словарь (если есть)
+    3. Процент от стоимости позиции (fallback)
     
     Args:
         ticker: Тикер инструмента
@@ -137,66 +133,23 @@ def get_margin_for_position(
         dlong: Коэффициент dlong из API (опционально)
         dshort: Коэффициент dshort из API (опционально)
         is_long: True для LONG позиции, False для SHORT
-        auto_calculate_point_value_flag: Если True, пытается автоматически вычислить стоимость пункта
+        point_value: Стоимость пункта (min_price_increment из API, опционально)
         
     Returns:
         Гарантийное обеспечение в рублях
     """
     ticker_upper = ticker.upper()
     
-    # 1. Сначала пробуем использовать справочник гарантийного обеспечения за лот
-    if ticker_upper in MARGIN_PER_LOT and MARGIN_PER_LOT[ticker_upper] > 0:
-        margin_per_lot = MARGIN_PER_LOT[ticker_upper]
-        return margin_per_lot * quantity
+    # 1. Пробуем расчет через переданную стоимость пункта (приоритет)
+    if point_value and point_value > 0 and entry_price > 0:
+        if is_long and dlong and dlong > 0:
+            margin_per_lot = point_value * entry_price * dlong
+            return margin_per_lot * quantity
+        elif not is_long and dshort and dshort > 0:
+            margin_per_lot = point_value * entry_price * dshort
+            return margin_per_lot * quantity
     
-    # 2. Автоматически вычисляем стоимость пункта, если известна маржа похожих инструментов
-    # Ищем инструменты на тот же базовый актив (серебро, платина, газ и т.д.)
-    if auto_calculate_point_value_flag and entry_price > 0:
-        # Группы похожих инструментов по базовому активу
-        # Ключ - префикс тикера, значение - список тикеров с известной маржей
-        instrument_groups = {
-            "S": ["S1H6", "SVH6"],  # Серебро
-            "P": ["PTH6"],  # Платина
-            "NG": ["NGG6", "NRG6"],  # Газ
-            "VB": ["VBH6"],  # Другие
-            "SR": ["SRH6"],  # Другие
-            "GLD": ["GLDRUBF"],  # Золото
-        }
-        
-        # Определяем группу текущего инструмента
-        current_group = None
-        for prefix, group_tickers in instrument_groups.items():
-            if ticker_upper.startswith(prefix):
-                current_group = group_tickers
-                break
-        
-        # Если группа найдена, ищем похожий инструмент с известной маржей
-        if current_group:
-            for similar_ticker in current_group:
-                if similar_ticker in MARGIN_PER_LOT and MARGIN_PER_LOT[similar_ticker] > 0:
-                    known_margin = MARGIN_PER_LOT[similar_ticker]
-                    
-                    # Пробуем вычислить стоимость пункта для текущего инструмента
-                    calculated_point_value = auto_calculate_point_value(
-                        ticker=ticker_upper,
-                        known_margin=known_margin,
-                        current_price=entry_price,
-                        dlong=dlong,
-                        dshort=dshort
-                    )
-                    
-                    if calculated_point_value and calculated_point_value > 0:
-                        # Используем вычисленную стоимость пункта для расчета маржи
-                        if is_long and dlong and dlong > 0:
-                            margin_per_lot = calculated_point_value * entry_price * dlong
-                            logger.info(f"[{ticker}] ✅ Auto-calculated margin via similar instrument ({similar_ticker}): {margin_per_lot:.2f} ₽")
-                            return margin_per_lot * quantity
-                        elif not is_long and dshort and dshort > 0:
-                            margin_per_lot = calculated_point_value * entry_price * dshort
-                            logger.info(f"[{ticker}] ✅ Auto-calculated margin via similar instrument ({similar_ticker}): {margin_per_lot:.2f} ₽")
-                            return margin_per_lot * quantity
-    
-    # 3. Пробуем расчет через стоимость пункта цены (если известны dlong/dshort и стоимость пункта)
+    # 2. Пробуем расчет через стоимость пункта цены из словаря POINT_VALUE
     if ticker_upper in POINT_VALUE and entry_price > 0:
         point_value = POINT_VALUE[ticker_upper]
         
@@ -208,7 +161,7 @@ def get_margin_for_position(
             margin_per_lot = point_value * entry_price * dshort
             return margin_per_lot * quantity
     
-    # 4. Fallback: используем процент от стоимости позиции
+    # 3. Fallback: используем процент от стоимости позиции
     if ticker_upper in MARGIN_RATE_PCT:
         margin_rate = MARGIN_RATE_PCT[ticker_upper] / 100.0
     else:
@@ -222,15 +175,16 @@ def update_margin_per_lot(ticker: str, margin_per_lot: float):
     """
     Обновить гарантийное обеспечение за лот для инструмента.
     
+    ВАЖНО: Эта функция больше не используется в расчетах.
+    Все значения рассчитываются динамически из API.
+    Оставлена для совместимости.
+    
     Args:
         ticker: Тикер инструмента
         margin_per_lot: Гарантийное обеспечение за лот в рублях
     """
     ticker_upper = ticker.upper()
     MARGIN_PER_LOT[ticker_upper] = margin_per_lot
-    
-    # Автоматически обновляем процентный коэффициент, если известна цена
-    # (это можно сделать позже, когда будет известна текущая цена)
 
 
 def calculate_max_lots(
@@ -304,9 +258,7 @@ def get_margin_per_lot_from_api_data(
     """
     Получить ГО за один лот из данных API.
     
-    Приоритет:
-    1. MARGIN_PER_LOT (если есть)
-    2. Формула: point_value * current_price * dlong/dshort
+    Формула: point_value * current_price * dlong/dshort
     
     Args:
         ticker: Тикер инструмента
@@ -317,15 +269,9 @@ def get_margin_per_lot_from_api_data(
         is_long: True для LONG, False для SHORT
     
     Returns:
-        ГО за один лот в рублях или None
+        ГО за один лот в рублях или None (если недостаточно данных)
     """
-    ticker_upper = ticker.upper()
-    
-    # 1. Проверяем справочник
-    if ticker_upper in MARGIN_PER_LOT and MARGIN_PER_LOT[ticker_upper] > 0:
-        return MARGIN_PER_LOT[ticker_upper]
-    
-    # 2. Рассчитываем через формулу
+    # Рассчитываем через формулу
     if point_value and point_value > 0 and current_price > 0:
         if is_long and dlong and dlong > 0:
             return point_value * current_price * dlong
