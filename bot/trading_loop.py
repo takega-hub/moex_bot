@@ -1182,6 +1182,11 @@ class TradingLoop:
                                 logger.error(f"[{instrument}] ❌ Attempt {attempt} failed: {error_msg2}")
                     
                     if not success:
+                        # Критическая ситуация: даже 1 лот не проходит
+                        # Это может означать:
+                        # 1. Биржа требует минимальный баланс для микро-контрактов
+                        # 2. blocked_lots не извлекается правильно, и реальный доступный баланс меньше
+                        # 3. Есть скрытые требования биржи
                         logger.error(
                             f"[{instrument}] ❌ All {max_attempts} retry attempts failed. "
                             f"Cannot open position with available margin. "
@@ -1192,8 +1197,13 @@ class TradingLoop:
                             f"Real available: {available_balance:.2f} руб. "
                             f"This suggests exchange requires more margin than calculated or minimum balance not met. "
                             f"Consider: 1) Increasing total balance to 5000+ руб, 2) Using larger margin per lot, "
-                            f"3) Checking exchange requirements for {instrument}."
+                            f"3) Checking exchange requirements for {instrument}. "
+                            f"⚠️ CRITICAL: If blocked_margin is 0.00, this may indicate API issue with blocked_lots extraction."
                         )
+                        
+                        # Для микро-контрактов, если даже 1 лот не проходит несколько раз подряд,
+                        # возможно стоит временно отключить инструмент
+                        # Но пока просто логируем - пользователь может решить вручную
                 
                 if self.tg_bot:
                     await self.tg_bot.send_message(
