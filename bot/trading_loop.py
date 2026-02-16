@@ -570,12 +570,33 @@ class TradingLoop:
             # Дополнительная информация для MTF стратегии
             if indicators_info.get('strategy') == 'MTF_ML':
                 reason = indicators_info.get('mtf_reason') or indicators_info.get('reason') or 'N/A'
-                logger.info(
-                    f"[{instrument}] MTF details: "
-                    f"1h={indicators_info.get('1h_pred', '?')}({indicators_info.get('1h_conf', 0):.2%}), "
-                    f"15m={indicators_info.get('15m_pred', '?')}({indicators_info.get('15m_conf', 0):.2%}), "
-                    f"reason={reason}"
-                )
+                reason_detail = indicators_info.get('reason_detail', '')
+                
+                # Показываем оригинальные предсказания, если они отличаются от финальных
+                orig_1h = indicators_info.get('orig_pred_1h')
+                orig_15m = indicators_info.get('orig_pred_15m')
+                pred_1h = indicators_info.get('1h_pred', '?')
+                pred_15m = indicators_info.get('15m_pred', '?')
+                
+                # Формируем детальную строку
+                detail_str = f"1h={pred_1h}"
+                if orig_1h is not None and orig_1h != pred_1h:
+                    detail_str += f"(orig:{orig_1h})"
+                detail_str += f"({indicators_info.get('1h_conf', 0):.2%})"
+                
+                detail_str += f", 15m={pred_15m}"
+                if orig_15m is not None and orig_15m != pred_15m:
+                    detail_str += f"(orig:{orig_15m})"
+                detail_str += f"({indicators_info.get('15m_conf', 0):.2%})"
+                
+                if reason_detail:
+                    logger.info(
+                        f"[{instrument}] MTF details: {detail_str}, reason={reason} ({reason_detail})"
+                    )
+                else:
+                    logger.info(
+                        f"[{instrument}] MTF details: {detail_str}, reason={reason}"
+                    )
             
             # Add to history
             if signal.action != Action.HOLD:

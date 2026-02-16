@@ -141,15 +141,16 @@ class MultiTimeframeMLStrategy:
             return 0, 0.0, {"reason": "empty_1h_data"}
         
         # Проверяем, достаточно ли данных для 1h модели
-        # Снижаем минимальный порог до 60 свечей (это примерно 2.5 дня данных)
-        # Выводим предупреждение только если данных очень мало
-        if len(df_1h) < 60:
+        # Минимальный порог: 30 свечей (это примерно 1.25 дня данных)
+        # Для базового предсказания этого достаточно
+        # Выводим предупреждение только если данных критически мало
+        if len(df_1h) < 30:
             if not hasattr(self, '_warned_insufficient_1h_count'):
                 self._warned_insufficient_1h_count = 0
             self._warned_insufficient_1h_count += 1
             # Выводим предупреждение только первые 3 раза или каждые 50 раз
             if self._warned_insufficient_1h_count <= 3 or self._warned_insufficient_1h_count % 50 == 0:
-                logger.debug(f"[MTF Strategy] Мало 1h данных: {len(df_1h)} свечей (минимум 60 рекомендуется, но продолжаем работу)")
+                logger.debug(f"[MTF Strategy] Мало 1h данных: {len(df_1h)} свечей (минимум 30 рекомендуется для стабильности, но продолжаем работу)")
         
         # Предсказание 1h модели
         # Если df_1h был агрегирован из 15m, нужно создать фичи заново (не пропускать)
@@ -175,18 +176,30 @@ class MultiTimeframeMLStrategy:
             return 0, 0.0, {"reason": f"15m_prediction_error: {str(e)[:50]}"}
         
         # 3. Проверяем пороги уверенности
+        # Сохраняем оригинальные предсказания для диагностики
+        orig_pred_1h = pred_1h
+        orig_pred_15m = pred_15m
+        
         # Если уверенность ниже порога, считаем что модель дает HOLD
+        threshold_reason_1h = None
+        threshold_reason_15m = None
         if conf_1h < self.confidence_threshold_1h:
+            threshold_reason_1h = f"conf_{conf_1h:.2%}_below_threshold_{self.confidence_threshold_1h:.2%}"
             pred_1h = 0
         if conf_15m < self.confidence_threshold_15m:
+            threshold_reason_15m = f"conf_{conf_15m:.2%}_below_threshold_{self.confidence_threshold_15m:.2%}"
             pred_15m = 0
         
         # 4. Комбинируем предсказания
         info = {
             "pred_1h": pred_1h,
             "conf_1h": conf_1h,
+            "orig_pred_1h": orig_pred_1h,  # Оригинальное предсказание до проверки порога
             "pred_15m": pred_15m,
             "conf_15m": conf_15m,
+            "orig_pred_15m": orig_pred_15m,  # Оригинальное предсказание до проверки порога
+            "threshold_reason_1h": threshold_reason_1h,
+            "threshold_reason_15m": threshold_reason_15m,
             "alignment": pred_1h == pred_15m if pred_1h != 0 and pred_15m != 0 else None,
         }
         
@@ -194,13 +207,24 @@ class MultiTimeframeMLStrategy:
             # Строгий режим: обе модели должны совпадать
             if self.require_alignment:
                 if pred_1h == 0:
-                    return 0, 0.0, {**info, "reason": "1h_no_signal"}
+                    # Детализируем причину: модель предсказала HOLD или уверенность ниже порога?
+                    if orig_pred_1h == 0:
+                        reason_detail = f"1h_model_predicted_hold_conf_{conf_1h:.2%}"
+                    else:
+                        reason_detail = f"1h_threshold_rejected_{orig_pred_1h}_conf_{conf_1h:.2%}_threshold_{self.confidence_threshold_1h:.2%}"
+                    return 0, 0.0, {**info, "reason": "1h_no_signal", "reason_detail": reason_detail}
                 
                 if pred_15m == 0:
-                    return 0, 0.0, {**info, "reason": "15m_no_signal"}
+                    # Детализируем причину: модель предсказала HOLD или уверенность ниже порога?
+                    if orig_pred_15m == 0:
+                        reason_detail = f"15m_model_predicted_hold_conf_{conf_15m:.2%}"
+                    else:
+                        reason_detail = f"15m_threshold_rejected_{orig_pred_15m}_conf_{conf_15m:.2%}_threshold_{self.confidence_threshold_15m:.2%}"
+                    return 0, 0.0, {**info, "reason": "15m_no_signal", "reason_detail": reason_detail}
                 
                 if pred_1h != pred_15m:
-                    return 0, 0.0, {**info, "reason": "directions_mismatch"}
+                    return 0, 0.0, {**info, "reason": "directions_mismatch", 
+                                   "reason_detail": f"1h={pred_1h}_15m={pred_15m}"}
                 
                 # Обе модели согласны - используем 15m для входа
                 combined_confidence = (conf_1h * 0.4 + conf_15m * 0.6)  # 1h=40%, 15m=60%
@@ -334,14 +358,16 @@ class MultiTimeframeMLStrategy:
             if signal_15m is None:
                 logger.warning("[MTF Strategy] 15m strategy returned None signal, returning HOLD")
                 return Signal(
+                    timestamp=pd.Timestamp.now(),
                     action=Action.HOLD,
-                    confidence=0.0,
+                    reason=f"mtf_hold_15m_none_{info.get('reason', 'unknown')}",
                     price=current_price,
                     take_profit=None,
                     stop_loss=None,
                     indicators_info={
                         "strategy": "MTF_ML",
                         "mtf_confidence": round(confidence, 4),
+                        "confidence": round(confidence, 4),
                         "1h_pred": info.get("pred_1h"),
                         "1h_conf": round(info.get("conf_1h", 0), 4),
                         "15m_pred": info.get("pred_15m"),
