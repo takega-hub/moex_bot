@@ -735,21 +735,33 @@ class TradingLoop:
                                     pos_result = all_pos_info.get("result", {})
                                     total_blocked_margin = pos_result.get("total_blocked_margin", 0.0)
                                     total_blocked_margin_from_api = total_blocked_margin  # For compatibility
+                                    
+                                    logger.info(
+                                        f"[{instrument}] Position info retrieved: "
+                                        f"total_blocked_margin={total_blocked_margin:.2f} руб, "
+                                        f"total_balance={total_balance:.2f} руб, "
+                                        f"api_available={api_available:.2f} руб"
+                                    )
+                                    
                                     if total_blocked_margin > 0:
                                         # Используем реальную замороженную маржу из API
                                         available_balance = total_balance - total_blocked_margin
                                         if available_balance < 0:
                                             available_balance = 0.0
-                                        logger.debug(
-                                            f"[{instrument}] Real available balance from blocked_lots: "
+                                        logger.info(
+                                            f"[{instrument}] ✅ Real available balance from blocked_lots: "
                                             f"balance={total_balance:.2f}, blocked={total_blocked_margin:.2f}, "
                                             f"available={available_balance:.2f}"
                                         )
                                     else:
                                         # Fallback: используем API availableBalance
+                                        logger.warning(
+                                            f"[{instrument}] ⚠️ total_blocked_margin is 0, using API availableBalance: "
+                                            f"{api_available:.2f} руб (may be inaccurate)"
+                                        )
                                         available_balance = api_available
                             except Exception as e:
-                                logger.debug(f"[{instrument}] Error getting blocked margin: {e}, using API available")
+                                logger.warning(f"[{instrument}] Error getting blocked margin: {e}, using API available")
                                 available_balance = api_available
             
             # Calculate total margin used by all open positions
@@ -841,15 +853,25 @@ class TradingLoop:
             balance = api_available_safe
             
             # Проверка минимального баланса для открытия позиции
-            # Биржа может требовать минимальный баланс (например, 3000 руб) для открытия позиций
-            MIN_BALANCE_FOR_TRADING = 3000.0  # Минимальный баланс для торговли
+            # Биржа может требовать минимальный баланс для открытия позиций
+            # Для микро-контрактов (NGG6, NRG6) может требоваться больше баланса
+            MIN_BALANCE_FOR_TRADING = 5000.0  # Минимальный баланс для торговли (увеличено с 3000)
             if total_balance < MIN_BALANCE_FOR_TRADING:
                 logger.warning(
                     f"[{instrument}] ⚠️ Total balance {total_balance:.2f} руб is below minimum "
                     f"required {MIN_BALANCE_FOR_TRADING:.2f} руб for trading. "
-                    f"Cannot open positions."
+                    f"Cannot open positions. This may be why exchange rejects orders even for 1 lot."
                 )
                 return
+            
+            # Дополнительная проверка: если даже 1 лот не проходит, возможно проблема в минимальном балансе
+            # или биржа требует больше маржи, чем рассчитывается
+            if margin_per_lot > 0 and balance >= margin_per_lot * 10:
+                # Достаточно баланса для 10+ лотов, но даже 1 не проходит - возможно проблема в требованиях биржи
+                logger.debug(
+                    f"[{instrument}] Balance sufficient for {int(balance / margin_per_lot)} lots, "
+                    f"but exchange may have additional requirements"
+                )
             
             if balance <= 0:
                 logger.error(

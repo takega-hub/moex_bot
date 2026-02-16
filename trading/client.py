@@ -404,15 +404,22 @@ class TinkoffClient:
                         }
                         
                         # Для валютной позиции (RUB000UTSTOM) blocked_lots содержит общую замороженную маржу
-                        if position.figi == "RUB000UTSTOM" and hasattr(position, 'blocked_lots'):
-                            try:
-                                blocked_lots = position.blocked_lots
-                                if hasattr(blocked_lots, 'units') and hasattr(blocked_lots, 'nano'):
-                                    total_blocked_margin = float(blocked_lots.units) + float(blocked_lots.nano) / 1e9
-                                    pos_data["blocked_margin"] = total_blocked_margin
-                                    logger.debug(f"Found total blocked margin in currency position: {total_blocked_margin:.2f} руб")
-                            except (AttributeError, TypeError) as e:
-                                logger.debug(f"Error parsing blocked_lots for currency: {e}")
+                        if position.figi == "RUB000UTSTOM":
+                            logger.debug(f"Found currency position RUB000UTSTOM, checking blocked_lots...")
+                            if hasattr(position, 'blocked_lots'):
+                                try:
+                                    blocked_lots = position.blocked_lots
+                                    logger.debug(f"blocked_lots type: {type(blocked_lots)}, value: {blocked_lots}")
+                                    if hasattr(blocked_lots, 'units') and hasattr(blocked_lots, 'nano'):
+                                        total_blocked_margin = float(blocked_lots.units) + float(blocked_lots.nano) / 1e9
+                                        pos_data["blocked_margin"] = total_blocked_margin
+                                        logger.info(f"✅ Found total blocked margin in currency position: {total_blocked_margin:.2f} руб")
+                                    else:
+                                        logger.warning(f"⚠️ blocked_lots exists but doesn't have units/nano attributes. Type: {type(blocked_lots)}")
+                                except (AttributeError, TypeError) as e:
+                                    logger.warning(f"Error parsing blocked_lots for currency: {e}, type: {type(position.blocked_lots) if hasattr(position, 'blocked_lots') else 'N/A'}")
+                            else:
+                                logger.debug(f"Currency position RUB000UTSTOM found but no blocked_lots attribute. Available attributes: {[attr for attr in dir(position) if not attr.startswith('_')]}")
                         
                         # Добавляем информацию о гарантийном обеспечении (марже), если доступна
                         # Для фьючерсов это важная информация для понимания распределения депозита
