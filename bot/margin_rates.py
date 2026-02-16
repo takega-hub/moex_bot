@@ -8,6 +8,7 @@
 Все значения рассчитываются динамически из данных API.
 """
 import logging
+import asyncio
 from typing import Dict, Optional
 
 logger = logging.getLogger(__name__)
@@ -16,25 +17,6 @@ logger = logging.getLogger(__name__)
 # Оставлен для совместимости и справки
 # ВАЖНО: Все значения рассчитываются динамически из API через формулу
 MARGIN_PER_LOT: Dict[str, float] = {
-    # Фьючерсы на серебро
-    "S1H6": 1574.5,  # SILVM-3.26 Серебро (мини) - из терминала (гарантийное обеспечение за лот, лотность=1)
-    "SVH6": 15751.12,  # SILV-3.26 Серебро - из терминала (гарантийное обеспечение за лот, лотность=10)
-    # Фьючерсы на газ
-    "NRG6": 0.27,  # NGM-2.26 Природный газ (микро) - значительно увеличен для учета реальных требований биржи
-    # Фьючерсы на платину
-    "PTH6": 33860.23,  # PLT-3.26 Платина - из терминала (гарантийное обеспечение за лот)
-    # Фьючерсы на газ природный
-    "NGG6": 7667.72,  # NG-2.26 Природный газ - из терминала (гарантийное обеспечение за лот)
-    # Фьючерсы на никель
-    "NCM6": 2112.00,  # NICKEL-6.26 Никель - из терминала (гарантийное обеспечение за лот, лотность=1)
-    # Фьючерсы на алюминий
-    "ANH6": 2746.1,  # ALUM-3.26 Алюминий - из терминала (гарантийное обеспечение за лот, лотность=1)
-    # Другие инструменты
-    "VBH6": 0.0,  # TODO: обновить из терминала
-    "SRH6": 0.0,  # TODO: обновить из терминала
-    "GLDRUBF": 0.0,  # TODO: обновить из терминала
-    # Фьючерсы на акции Т-Технологии
-    "TBH6": 885.75,  # T-3.26 Т-Технологии - из терминала (гарантийное обеспечение за лот)
 }
 
 # Коэффициенты маржи в процентах от стоимости позиции (fallback)
@@ -121,9 +103,10 @@ def get_margin_for_position(
     Получить гарантийное обеспечение для позиции.
     
     Приоритет расчета:
-    1. Расчет через стоимость пункта: ГО = point_value * цена * dlong/dshort (если point_value передан)
-    2. Расчет через POINT_VALUE словарь (если есть)
-    3. Процент от стоимости позиции (fallback)
+    1. Справочник MARGIN_PER_LOT (если есть значение) - ВЫСШИЙ ПРИОРИТЕТ!
+    2. Расчет через стоимость пункта: ГО = point_value * цена * dlong/dshort (если point_value передан)
+    3. Расчет через POINT_VALUE словарь (если есть)
+    4. Процент от стоимости позиции (fallback)
     
     Args:
         ticker: Тикер инструмента
@@ -140,7 +123,12 @@ def get_margin_for_position(
     """
     ticker_upper = ticker.upper()
     
-    # 1. Пробуем расчет через переданную стоимость пункта (приоритет)
+    # 1. Сначала проверяем справочник MARGIN_PER_LOT (ВЫСШИЙ ПРИОРИТЕТ!)
+    if ticker_upper in MARGIN_PER_LOT and MARGIN_PER_LOT[ticker_upper] > 0:
+        margin_per_lot = MARGIN_PER_LOT[ticker_upper]
+        return margin_per_lot * quantity
+    
+    # 2. Пробуем расчет через переданную стоимость пункта
     if point_value and point_value > 0 and entry_price > 0:
         if is_long and dlong and dlong > 0:
             margin_per_lot = point_value * entry_price * dlong
@@ -258,7 +246,9 @@ def get_margin_per_lot_from_api_data(
     """
     Получить ГО за один лот из данных API.
     
-    Формула: point_value * current_price * dlong/dshort
+    Приоритет:
+    1. Справочник MARGIN_PER_LOT (если есть значение)
+    2. Формула: point_value * current_price * dlong/dshort
     
     Args:
         ticker: Тикер инструмента
@@ -271,7 +261,13 @@ def get_margin_per_lot_from_api_data(
     Returns:
         ГО за один лот в рублях или None (если недостаточно данных)
     """
-    # Рассчитываем через формулу
+    ticker_upper = ticker.upper()
+    
+    # 1. Сначала проверяем справочник MARGIN_PER_LOT (приоритет!)
+    if ticker_upper in MARGIN_PER_LOT and MARGIN_PER_LOT[ticker_upper] > 0:
+        return MARGIN_PER_LOT[ticker_upper]
+    
+    # 2. Рассчитываем через формулу, если есть все необходимые данные
     if point_value and point_value > 0 and current_price > 0:
         if is_long and dlong and dlong > 0:
             return point_value * current_price * dlong
@@ -279,3 +275,135 @@ def get_margin_per_lot_from_api_data(
             return point_value * current_price * dshort
     
     return None
+
+
+async def update_margins_from_api(
+    tinkoff_client,
+    instruments: list,
+    storage=None
+) -> Dict[str, float]:
+    """
+    Обновить словарь MARGIN_PER_LOT из API для всех активных инструментов при старте бота.
+    
+    Args:
+        tinkoff_client: TinkoffClient instance
+        instruments: Список тикеров инструментов
+        storage: DataStorage instance (опционально, для получения текущей цены)
+    
+    Returns:
+        Словарь с обновленными значениями ГО {ticker: margin_per_lot}
+    """
+    updated_margins = {}
+    
+    for ticker in instruments:
+        try:
+            # Получаем FIGI для тикера
+            instrument_info_storage = None
+            if storage:
+                instrument_info_storage = storage.get_instrument_by_ticker(ticker)
+            
+            if not instrument_info_storage:
+                logger.warning(f"[update_margins_from_api] Instrument {ticker} not found in storage")
+                continue
+            
+            figi = instrument_info_storage["figi"]
+            
+            # Получаем текущую цену
+            current_price = 0.0
+            if storage:
+                try:
+                    df = storage.get_candles(figi=figi, interval="15min", limit=1)
+                    if not df.empty:
+                        current_price = float(df.iloc[-1]["close"])
+                except:
+                    pass
+            
+            # Если цена не получена, используем примерную
+            if current_price <= 0:
+                price_estimates = {
+                    "NGG6": 3.0,
+                    "PTH6": 2049.7,
+                    "NRG6": 3.0,
+                    "SVH6": 78.0,
+                    "S1H6": 77.0,
+                    "VBH6": 8500.0,
+                    "SRH6": 31000.0,
+                    "GLDRUBF": 12200.0,
+                    "RLH6": 100.0,
+                }
+                current_price = price_estimates.get(ticker.upper(), 100.0)
+            
+            # Получаем информацию об инструменте из API
+            inst_info = await asyncio.to_thread(tinkoff_client.get_instrument_info, figi)
+            if not inst_info:
+                logger.warning(f"[update_margins_from_api] Could not get instrument info for {ticker}")
+                continue
+            
+            # Извлекаем данные
+            api_dlong = inst_info.get('dlong')
+            api_dshort = inst_info.get('dshort')
+            min_price_increment = inst_info.get('min_price_increment')
+            lot_size = inst_info.get('lot', 1.0)
+            
+            # Рассчитываем ГО используя правильную формулу
+            margin_per_lot = None
+            
+            # Сначала пробуем через min_price_increment
+            if min_price_increment and min_price_increment > 0 and current_price > 0:
+                # Пробуем для LONG и SHORT, берем максимальную
+                margin_long = get_margin_per_lot_from_api_data(
+                    ticker=ticker,
+                    current_price=current_price,
+                    point_value=min_price_increment,
+                    dlong=api_dlong,
+                    dshort=api_dshort,
+                    is_long=True
+                )
+                margin_short = get_margin_per_lot_from_api_data(
+                    ticker=ticker,
+                    current_price=current_price,
+                    point_value=min_price_increment,
+                    dlong=api_dlong,
+                    dshort=api_dshort,
+                    is_long=False
+                )
+                
+                if margin_long or margin_short:
+                    margin_per_lot = max(margin_long or 0, margin_short or 0) if (margin_long and margin_short) else (margin_long or margin_short or 0)
+            
+            # Если не получилось, используем стандартную функцию
+            if not margin_per_lot or margin_per_lot <= 0:
+                margin_long = get_margin_for_position(
+                    ticker=ticker,
+                    quantity=1.0,
+                    entry_price=current_price,
+                    lot_size=lot_size,
+                    dlong=api_dlong,
+                    dshort=api_dshort,
+                    is_long=True
+                )
+                
+                margin_short = get_margin_for_position(
+                    ticker=ticker,
+                    quantity=1.0,
+                    entry_price=current_price,
+                    lot_size=lot_size,
+                    dlong=api_dlong,
+                    dshort=api_dshort,
+                    is_long=False
+                )
+                
+                margin_per_lot = max(margin_long, margin_short) if margin_long > 0 and margin_short > 0 else (margin_long if margin_long > 0 else margin_short)
+            
+            # Обновляем словарь, если получили значение
+            if margin_per_lot and margin_per_lot > 0:
+                update_margin_per_lot(ticker, margin_per_lot)
+                updated_margins[ticker.upper()] = margin_per_lot
+                logger.info(f"[update_margins_from_api] ✅ {ticker}: ГО обновлено = {margin_per_lot:.2f} ₽")
+            else:
+                logger.warning(f"[update_margins_from_api] ⚠️ {ticker}: Не удалось рассчитать ГО")
+        
+        except Exception as e:
+            logger.error(f"[update_margins_from_api] Ошибка для {ticker}: {e}", exc_info=True)
+    
+    return updated_margins

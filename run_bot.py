@@ -165,16 +165,30 @@ async def main():
             logger.error(f"Failed to initialize TradingLoop: {e}", exc_info=True)
             raise
         
-        # Calculate margins for active instruments at startup
+        # Обновляем словарь ГО из API для всех активных инструментов
         if state.active_instruments:
             try:
                 from data.storage import DataStorage
+                from bot.margin_rates import update_margins_from_api
                 from bot.margin_calculator import calculate_margins_for_instruments
                 
                 storage = DataStorage()
-                logger.info("📊 Calculating margins for active instruments at startup...")
+                logger.info("📊 Обновление словаря ГО из API для активных инструментов...")
                 
-                # Выполняем расчет маржи асинхронно
+                # Обновляем словарь MARGIN_PER_LOT из API
+                updated_margins = await update_margins_from_api(
+                    tinkoff_client=tinkoff,
+                    instruments=state.active_instruments,
+                    storage=storage
+                )
+                
+                if updated_margins:
+                    logger.info(f"✅ Словарь ГО обновлен для {len(updated_margins)} инструментов: {updated_margins}")
+                else:
+                    logger.warning("⚠️ Не удалось обновить словарь ГО из API")
+                
+                # Также сохраняем рассчитанные значения маржи в state (для совместимости)
+                logger.info("📊 Calculating margins for active instruments at startup...")
                 margins = await calculate_margins_for_instruments(
                     tinkoff=tinkoff,
                     storage=storage,
@@ -187,7 +201,7 @@ async def main():
                 
                 logger.info(f"✅ Margins calculated and saved for {len(margins)} instruments")
             except Exception as e:
-                logger.warning(f"⚠️ Failed to calculate margins at startup: {e}", exc_info=True)
+                logger.warning(f"⚠️ Failed to update margins at startup: {e}", exc_info=True)
         
         # Run components
         try:
