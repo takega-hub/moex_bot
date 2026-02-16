@@ -680,19 +680,42 @@ class TradingLoop:
                     )
                     return
             
-            # Get lot size (quantity step) (с таймаутом 30 секунд)
+            # Get instrument info including lot size and margin-related fields (с таймаутом 30 секунд)
+            lot_size = 1.0
+            instrument_info = None
             try:
-                lot_size = await asyncio.wait_for(
-                    asyncio.to_thread(self.tinkoff.get_qty_step, figi),
+                instrument_info = await asyncio.wait_for(
+                    asyncio.to_thread(self.tinkoff.get_instrument_info, figi),
                     timeout=30.0
                 )
-                if lot_size <= 0:
-                    lot_size = 1.0
+                if instrument_info:
+                    lot_size = instrument_info.get('lot', 1.0)
+                    if lot_size <= 0:
+                        lot_size = 1.0
+                    logger.info(
+                        f"[{instrument}] 📊 Instrument info: lot={lot_size}, "
+                        f"min_price_increment={instrument_info.get('min_price_increment', 0.01)}, "
+                        f"ticker={instrument_info.get('ticker', 'N/A')}"
+                    )
+                    # Логируем margin-related fields, если они есть
+                    if 'margin_fields' in instrument_info and instrument_info['margin_fields']:
+                        logger.info(
+                            f"[{instrument}] 📊 Instrument margin-related fields found: "
+                            f"{list(instrument_info['margin_fields'].keys())}"
+                        )
+                else:
+                    # Fallback: используем только lot size
+                    lot_size = await asyncio.wait_for(
+                        asyncio.to_thread(self.tinkoff.get_qty_step, figi),
+                        timeout=10.0
+                    )
+                    if lot_size <= 0:
+                        lot_size = 1.0
             except asyncio.TimeoutError:
-                logger.error(f"[{instrument}] Timeout getting lot size (30s exceeded), using default 1.0")
+                logger.error(f"[{instrument}] Timeout getting instrument info (30s exceeded), using default lot_size=1.0")
                 lot_size = 1.0
             except Exception as e:
-                logger.error(f"[{instrument}] Error getting lot size: {e}, using default 1.0")
+                logger.warning(f"[{instrument}] Error getting instrument info: {e}, using default lot_size=1.0")
                 lot_size = 1.0
             
             # Get balance and available funds (с таймаутом 30 секунд)
@@ -755,11 +778,23 @@ class TradingLoop:
                                         )
                                     else:
                                         # Fallback: используем API availableBalance
+                                        # Но для микро-контрактов это может быть неточно
+                                        # Биржа может требовать минимальный баланс или другие ограничения
                                         logger.warning(
                                             f"[{instrument}] ⚠️ total_blocked_margin is 0, using API availableBalance: "
-                                            f"{api_available:.2f} руб (may be inaccurate)"
+                                            f"{api_available:.2f} руб (may be inaccurate). "
+                                            f"For micro contracts (NGG6, NRG6), exchange may require minimum balance or have hidden requirements."
                                         )
                                         available_balance = api_available
+                                        
+                                        # Для микро-контрактов, если availableBalance равен total_balance,
+                                        # это подозрительно - возможно, биржа не учитывает маржу правильно
+                                        if instrument.upper() in ["NGG6", "NRG6"] and abs(api_available - total_balance) < 0.01:
+                                            logger.warning(
+                                                f"[{instrument}] ⚠️ CRITICAL: API availableBalance equals total_balance. "
+                                                f"This suggests API is not accounting for margin requirements. "
+                                                f"Exchange may require minimum balance for micro contracts or have other restrictions."
+                                            )
                             except Exception as e:
                                 logger.warning(f"[{instrument}] Error getting blocked margin: {e}, using API available")
                                 available_balance = api_available
@@ -874,40 +909,84 @@ class TradingLoop:
                 return
             
             # Calculate position size
-            # Используем справочник реальных коэффициентов маржи
+            # Приоритет: используем значения из API (dlong/dshort), затем справочник, затем расчет
             from bot.margin_rates import get_margin_for_position
             
             if lot_size <= 0:
                 lot_size = 1.0
             
-            # Получаем маржу за 1 лот из справочника
+            # Определяем направление позиции
+            is_long = signal.action == "LONG"
+            
+            # ВАЖНО: API возвращает dlong/dshort, но эти значения НЕ соответствуют реальной марже!
+            # Например, для NGG6: API dlong = 0.33 руб, но реальная маржа = 7 667,72 ₽
+            # Поэтому используем словарь как ОСНОВНОЙ источник маржи
+            margin_per_lot = 0.0
+            margin_source = "unknown"
+            
+            # Сначала пробуем словарь (основной источник)
+            # Передаем dlong/dshort из API для расчета через стоимость пункта
+            api_dlong = instrument_info.get('dlong', None) if instrument_info else None
+            api_dshort = instrument_info.get('dshort', None) if instrument_info else None
+            
             margin_per_lot = get_margin_for_position(
                 ticker=instrument,
                 quantity=1.0,
                 entry_price=current_price,
-                lot_size=lot_size
+                lot_size=lot_size,
+                dlong=api_dlong,
+                dshort=api_dshort,
+                is_long=is_long
             )
+            margin_source = "dictionary"
             
-            # Если справочник вернул 0 (нет данных), используем консервативный коэффициент
+            if margin_per_lot > 0:
+                logger.info(
+                    f"[{instrument}] ✅ Using margin from dictionary: "
+                    f"{margin_per_lot:.2f} руб per lot"
+                )
+            else:
+                # Если в словаре нет значения, пробуем API (но с предупреждением)
+                if instrument_info and 'dlong' in instrument_info and 'dshort' in instrument_info:
+                    if is_long:
+                        api_margin = instrument_info.get('dlong', 0.0)
+                    else:
+                        api_margin = instrument_info.get('dshort', 0.0)
+                    
+                    if api_margin > 0:
+                        logger.warning(
+                            f"[{instrument}] ⚠️ Using API margin ({'dlong' if is_long else 'dshort'}): "
+                            f"{api_margin:.2f} руб - это может быть НЕВЕРНО! "
+                            f"Проверьте значение в терминале и обновите словарь."
+                        )
+                        margin_per_lot = api_margin
+                        margin_source = "API (unverified)"
+            
+            # Если справочник тоже вернул 0, используем консервативный коэффициент
             if margin_per_lot <= 0:
                 margin_rate = 0.25  # 25% margin requirement (very conservative, actual is ~12%)
                 position_value_per_lot = current_price * lot_size
                 margin_per_lot = position_value_per_lot * margin_rate
+                margin_source = "calculated"
                 logger.warning(
-                    f"[{instrument}] ⚠️ No margin data in dictionary, using calculated: "
+                    f"[{instrument}] ⚠️ No margin data in API or dictionary, using calculated: "
                     f"{margin_per_lot:.2f} руб per lot (rate: {margin_rate*100:.0f}%)"
                 )
+            
+            # Добавляем небольшой запас маржи для учета вариационной маржи и других требований биржи
+            # Если маржа из API - используем минимальный запас (10%), т.к. это точное значение биржи
+            # Если из словаря или расчетная - используем больший запас (20%)
+            if margin_source.startswith("API"):
+                safety_multiplier = 1.1  # 10% запас для API значений (они точные)
             else:
-                # Добавляем небольшой запас маржи для учета вариационной маржи и других требований биржи
-                # Используем минимальный запас, т.к. blocked_margin из API уже учитывает замороженную маржу
-                safety_multiplier = 1.2  # 20% запас (уменьшено с 50-100%)
-                
-                original_margin = margin_per_lot
-                margin_per_lot = margin_per_lot * safety_multiplier
-                logger.info(
-                    f"[{instrument}] Using margin from dictionary with {safety_multiplier*100:.0f}% safety buffer: "
-                    f"{margin_per_lot:.2f} руб per lot (original: {original_margin:.2f} руб)"
-                )
+                safety_multiplier = 1.2  # 20% запас для словаря/расчета
+            
+            original_margin = margin_per_lot
+            margin_per_lot = margin_per_lot * safety_multiplier
+            logger.info(
+                f"[{instrument}] Using margin from {margin_source} with {safety_multiplier*100:.0f}% safety buffer: "
+                f"{margin_per_lot:.2f} руб per lot (original: {original_margin:.2f} руб)"
+            )
             
             if margin_per_lot <= 0:
                 logger.error(f"[{instrument}] ❌ Invalid margin calculation: price={current_price}, lot_size={lot_size}")

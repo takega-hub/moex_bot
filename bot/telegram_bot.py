@@ -406,6 +406,132 @@ class TelegramBot:
         if wallet_balance > 0:
             status_text += f"💰 ACCOUNT INFO:\n"
             status_text += f"Баланс: {wallet_balance:.2f} руб | Доступно: {available_balance:.2f} руб\n\n"
+            
+            # Рассчитываем минимальную маржу для всех активных инструментов
+            if self.state.active_instruments:
+                status_text += "📊 МИНИМАЛЬНАЯ МАРЖА ДЛЯ ТОРГОВЛИ:\n"
+                from bot.margin_rates import get_margin_for_position, MARGIN_PER_LOT
+                
+                min_margin_total = 0.0
+                instrument_margins = []
+                
+                for ticker in self.state.active_instruments:
+                    # Получаем информацию об инструменте
+                    instrument_info_storage = self.storage.get_instrument_by_ticker(ticker)
+                    if not instrument_info_storage:
+                        continue
+                    
+                    figi = instrument_info_storage["figi"]
+                    
+                    # Получаем текущую цену
+                    current_price = 0.0
+                    try:
+                        df = self.storage.get_candles(figi=figi, interval="15min", limit=1)
+                        if not df.empty:
+                            current_price = float(df.iloc[-1]["close"])
+                    except:
+                        pass
+                    
+                    # Если цена не получена, используем примерную
+                    if current_price <= 0:
+                        # Примерные цены для расчета (можно обновить)
+                        price_estimates = {
+                            "NGG6": 3.0,
+                            "PTH6": 2049.7,
+                            "NRG6": 3.0,
+                            "SVH6": 78.0,
+                            "S1H6": 77.0,
+                            "VBH6": 8500.0,
+                            "SRH6": 31000.0,
+                            "GLDRUBF": 12200.0,
+                        }
+                        current_price = price_estimates.get(ticker.upper(), 100.0)
+                    
+                    # Получаем lot_size
+                    lot_size = 1.0
+                    try:
+                        lot_size = await asyncio.wait_for(
+                            asyncio.to_thread(self.tinkoff.get_qty_step, figi),
+                            timeout=5.0
+                        )
+                        if lot_size <= 0:
+                            lot_size = 1.0
+                    except:
+                        pass
+                    
+                    # Получаем dlong/dshort из API (если доступно)
+                    api_dlong = None
+                    api_dshort = None
+                    try:
+                        inst_info = await asyncio.wait_for(
+                            asyncio.to_thread(self.tinkoff.get_instrument_info, figi),
+                            timeout=5.0
+                        )
+                        if inst_info:
+                            api_dlong = inst_info.get('dlong')
+                            api_dshort = inst_info.get('dshort')
+                    except:
+                        pass
+                    
+                    # Рассчитываем маржу для LONG и SHORT (берем большее значение)
+                    margin_long = get_margin_for_position(
+                        ticker=ticker,
+                        quantity=1.0,
+                        entry_price=current_price,
+                        lot_size=lot_size,
+                        dlong=api_dlong,
+                        dshort=api_dshort,
+                        is_long=True
+                    )
+                    
+                    margin_short = get_margin_for_position(
+                        ticker=ticker,
+                        quantity=1.0,
+                        entry_price=current_price,
+                        lot_size=lot_size,
+                        dlong=api_dlong,
+                        dshort=api_dshort,
+                        is_long=False
+                    )
+                    
+                    # Берем максимальную маржу (LONG или SHORT)
+                    margin_for_1_lot = max(margin_long, margin_short) if margin_long > 0 and margin_short > 0 else (margin_long if margin_long > 0 else margin_short)
+                    
+                    if margin_for_1_lot > 0:
+                        instrument_margins.append({
+                            "ticker": ticker,
+                            "margin": margin_for_1_lot,
+                            "price": current_price
+                        })
+                        min_margin_total = max(min_margin_total, margin_for_1_lot)
+                
+                # Сортируем по марже (от большего к меньшему)
+                instrument_margins.sort(key=lambda x: x["margin"], reverse=True)
+                
+                # Выводим информацию
+                for inst_margin in instrument_margins:
+                    ticker = inst_margin["ticker"]
+                    margin = inst_margin["margin"]
+                    price = inst_margin["price"]
+                    
+                    # Проверяем, достаточно ли баланса
+                    if wallet_balance >= margin:
+                        status_emoji = "✅"
+                        max_lots = int(wallet_balance / margin)
+                        status_text += f"{status_emoji} {ticker}: {margin:.2f} ₽/лот (до {max_lots} лот)\n"
+                    else:
+                        status_emoji = "❌"
+                        shortage = margin - wallet_balance
+                        status_text += f"{status_emoji} {ticker}: {margin:.2f} ₽/лот (не хватает {shortage:.2f} ₽)\n"
+                
+                if min_margin_total > 0:
+                    status_text += f"\n💡 Минимальный баланс для торговли: {min_margin_total:.2f} ₽\n"
+                    if wallet_balance < min_margin_total:
+                        shortage = min_margin_total - wallet_balance
+                        status_text += f"⚠️ Недостаточно баланса! Нужно пополнить на {shortage:.2f} ₽\n"
+                    else:
+                        status_text += f"✅ Баланс достаточен для открытия 1 лота всех инструментов\n"
+                status_text += "\n"
         
         if open_positions:
             status_text += "📊 OPEN POSITIONS:\n"
@@ -2118,7 +2244,87 @@ class TelegramBot:
             text += "💰 БАЛАНС\n"
             text += f"Текущий: {wallet_balance:.2f} руб ({total_pnl_pct:+.2f}%)\n"
             text += f"Доступно: {available_balance:.2f} руб\n"
-            text += f"В позициях: {total_margin:.2f} руб\n\n"
+            text += f"В позициях: {total_margin:.2f} руб\n"
+            
+            # Рассчитываем минимальную маржу для всех активных инструментов
+            if self.state.active_instruments:
+                from bot.margin_rates import get_margin_for_position
+                
+                min_margin_total = 0.0
+                instrument_margins = []
+                
+                for ticker in self.state.active_instruments:
+                    instrument_info_storage = self.storage.get_instrument_by_ticker(ticker)
+                    if not instrument_info_storage:
+                        continue
+                    
+                    figi = instrument_info_storage["figi"]
+                    
+                    # Получаем текущую цену
+                    current_price = 0.0
+                    try:
+                        df = self.storage.get_candles(figi=figi, interval="15min", limit=1)
+                        if not df.empty:
+                            current_price = float(df.iloc[-1]["close"])
+                    except:
+                        pass
+                    
+                    if current_price <= 0:
+                        price_estimates = {
+                            "NGG6": 3.0, "PTH6": 2049.7, "NRG6": 3.0,
+                            "SVH6": 78.0, "S1H6": 77.0, "VBH6": 8500.0,
+                            "SRH6": 31000.0, "GLDRUBF": 12200.0,
+                        }
+                        current_price = price_estimates.get(ticker.upper(), 100.0)
+                    
+                    # Получаем lot_size и API данные
+                    lot_size = 1.0
+                    api_dlong = None
+                    api_dshort = None
+                    try:
+                        lot_size = await asyncio.wait_for(
+                            asyncio.to_thread(self.tinkoff.get_qty_step, figi),
+                            timeout=5.0
+                        )
+                        if lot_size <= 0:
+                            lot_size = 1.0
+                        
+                        inst_info = await asyncio.wait_for(
+                            asyncio.to_thread(self.tinkoff.get_instrument_info, figi),
+                            timeout=5.0
+                        )
+                        if inst_info:
+                            api_dlong = inst_info.get('dlong')
+                            api_dshort = inst_info.get('dshort')
+                    except:
+                        pass
+                    
+                    # Рассчитываем маржу для LONG и SHORT
+                    margin_long = get_margin_for_position(
+                        ticker=ticker, quantity=1.0, entry_price=current_price,
+                        lot_size=lot_size, dlong=api_dlong, dshort=api_dshort, is_long=True
+                    )
+                    margin_short = get_margin_for_position(
+                        ticker=ticker, quantity=1.0, entry_price=current_price,
+                        lot_size=lot_size, dlong=api_dlong, dshort=api_dshort, is_long=False
+                    )
+                    
+                    margin_for_1_lot = max(margin_long, margin_short) if margin_long > 0 and margin_short > 0 else (margin_long if margin_long > 0 else margin_short)
+                    
+                    if margin_for_1_lot > 0:
+                        instrument_margins.append({"ticker": ticker, "margin": margin_for_1_lot})
+                        min_margin_total = max(min_margin_total, margin_for_1_lot)
+                
+                if min_margin_total > 0:
+                    text += f"\n📊 МИНИМАЛЬНАЯ МАРЖА:\n"
+                    text += f"Для 1 лота: {min_margin_total:.2f} ₽\n"
+                    if wallet_balance < min_margin_total:
+                        shortage = min_margin_total - wallet_balance
+                        text += f"⚠️ Не хватает: {shortage:.2f} ₽\n"
+                    else:
+                        text += f"✅ Баланс достаточен\n"
+            
+            text += "\n"
         
         text += f"📈 ОТКРЫТЫЕ ПОЗИЦИИ ({open_count})\n"
         if open_count > 0:

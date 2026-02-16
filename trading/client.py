@@ -391,6 +391,29 @@ class TinkoffClient:
                 response = client.operations.get_portfolio(account_id=account_id)
                 logger.debug(f"[get_position_info] get_portfolio() completed, found {len(response.positions) if response.positions else 0} positions")
                 
+                # Логируем поля портфеля для диагностики доступного баланса
+                portfolio_info = {}
+                if hasattr(response, 'total_amount_portfolio'):
+                    try:
+                        total = float(response.total_amount_portfolio.units) + float(response.total_amount_portfolio.nano) / 1e9
+                        portfolio_info['total_amount_portfolio'] = total
+                    except:
+                        pass
+                if hasattr(response, 'available_withdrawal_draw_limit'):
+                    try:
+                        available = float(response.available_withdrawal_draw_limit.units) + float(response.available_withdrawal_draw_limit.nano) / 1e9
+                        portfolio_info['available_withdrawal_draw_limit'] = available
+                    except:
+                        pass
+                if hasattr(response, 'available_amount'):
+                    try:
+                        available = float(response.available_amount.units) + float(response.available_amount.nano) / 1e9
+                        portfolio_info['available_amount'] = available
+                    except:
+                        pass
+                if portfolio_info:
+                    logger.info(f"📊 Portfolio-level info: {portfolio_info}")
+                
                 positions = []
                 total_blocked_margin = 0.0  # Общая замороженная маржа из валютной позиции
                 
@@ -631,6 +654,123 @@ class TinkoffClient:
         except Exception as e:
             logger.error(f"Error placing order: {e}")
             return {"retCode": -1, "retMsg": str(e)}
+    
+    def get_instrument_info(self, figi: str) -> Optional[Dict[str, Any]]:
+        """
+        Get full instrument information including margin requirements.
+        
+        Args:
+            figi: Instrument FIGI
+            
+        Returns:
+            Dict with instrument info including margin-related fields
+        """
+        try:
+            logger.debug(f"[get_instrument_info] Starting for {figi}")
+            with self._get_client() as client:
+                response = client.instruments.get_instrument_by(id_type=InstrumentIdType.INSTRUMENT_ID_TYPE_FIGI, id=figi)
+                instrument = response.instrument
+                
+                info = {
+                    "figi": figi,
+                    "ticker": getattr(instrument, 'ticker', ''),
+                    "name": getattr(instrument, 'name', ''),
+                }
+                
+                # Lot size
+                if hasattr(instrument, 'lot'):
+                    info['lot'] = float(instrument.lot)
+                else:
+                    info['lot'] = 1.0
+                
+                # Price step
+                if hasattr(instrument, 'min_price_increment'):
+                    inc = instrument.min_price_increment
+                    if hasattr(inc, 'units') and hasattr(inc, 'nano'):
+                        info['min_price_increment'] = float(inc.units) + float(inc.nano) / 1e9
+                    else:
+                        info['min_price_increment'] = 0.01
+                else:
+                    info['min_price_increment'] = 0.01
+                
+                # Извлекаем коэффициенты гарантийного обеспечения (dlong, dshort)
+                def extract_money_value(obj):
+                    """Извлечь значение из MoneyValue или Quotation объекта."""
+                    if obj is None:
+                        return None
+                    if hasattr(obj, 'units') and hasattr(obj, 'nano'):
+                        try:
+                            return float(obj.units) + float(obj.nano) / 1e9
+                        except (ValueError, TypeError):
+                            return None
+                    return None
+                
+                # dlong - гарантийное обеспечение для LONG позиции
+                if hasattr(instrument, 'dlong'):
+                    dlong = extract_money_value(instrument.dlong)
+                    if dlong is not None:
+                        info['dlong'] = dlong
+                        logger.debug(f"[get_instrument_info] {figi} dlong (LONG margin): {dlong:.2f} руб")
+                
+                # dshort - гарантийное обеспечение для SHORT позиции
+                if hasattr(instrument, 'dshort'):
+                    dshort = extract_money_value(instrument.dshort)
+                    if dshort is not None:
+                        info['dshort'] = dshort
+                        logger.debug(f"[get_instrument_info] {figi} dshort (SHORT margin): {dshort:.2f} руб")
+                
+                # dlong_client - гарантийное обеспечение для клиента (LONG)
+                if hasattr(instrument, 'dlong_client'):
+                    dlong_client = extract_money_value(instrument.dlong_client)
+                    if dlong_client is not None:
+                        info['dlong_client'] = dlong_client
+                
+                # dshort_client - гарантийное обеспечение для клиента (SHORT)
+                if hasattr(instrument, 'dshort_client'):
+                    dshort_client = extract_money_value(instrument.dshort_client)
+                    if dshort_client is not None:
+                        info['dshort_client'] = dshort_client
+                
+                # klong, kshort - коэффициенты для расчета маржи
+                if hasattr(instrument, 'klong'):
+                    klong = extract_money_value(instrument.klong)
+                    if klong is not None:
+                        info['klong'] = klong
+                
+                if hasattr(instrument, 'kshort'):
+                    kshort = extract_money_value(instrument.kshort)
+                    if kshort is not None:
+                        info['kshort'] = kshort
+                
+                # Логируем все поля инструмента для диагностики маржи
+                margin_related_fields = {}
+                for attr_name in dir(instrument):
+                    if not attr_name.startswith('_') and any(keyword in attr_name.lower() for keyword in ['margin', 'lot', 'price', 'step', 'min', 'initial', 'blocked']):
+                        try:
+                            attr_value = getattr(instrument, attr_name)
+                            if attr_value is not None:
+                                margin_related_fields[attr_name] = {
+                                    'type': type(attr_value).__name__,
+                                    'value': str(attr_value)[:200]
+                                }
+                                # Если это MoneyValue или Quotation, извлекаем значение
+                                if hasattr(attr_value, 'units') and hasattr(attr_value, 'nano'):
+                                    try:
+                                        value = float(attr_value.units) + float(attr_value.nano) / 1e9
+                                        margin_related_fields[attr_name]['extracted_value'] = value
+                                    except (ValueError, TypeError):
+                                        pass
+                        except Exception as e:
+                            margin_related_fields[attr_name] = {'error': str(e)}
+                
+                if margin_related_fields:
+                    logger.info(f"📊 Instrument {figi} margin-related fields: {margin_related_fields}")
+                    info['margin_fields'] = margin_related_fields
+                
+                return info
+        except Exception as e:
+            logger.error(f"Error getting instrument info for {figi}: {e}")
+            return None
     
     def get_qty_step(self, figi: str) -> float:
         """Get quantity step (lot size) for instrument."""
