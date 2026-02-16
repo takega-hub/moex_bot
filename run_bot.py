@@ -173,35 +173,52 @@ async def main():
                 from bot.margin_calculator import calculate_margins_for_instruments
                 
                 storage = DataStorage()
-                logger.info("📊 Обновление словаря ГО из API для активных инструментов...")
+                logger.info(f"📊 Обновление словаря ГО из API для {len(state.active_instruments)} активных инструментов...")
                 
-                # Обновляем словарь MARGIN_PER_LOT из API
-                updated_margins = await update_margins_from_api(
-                    tinkoff_client=tinkoff,
-                    instruments=state.active_instruments,
-                    storage=storage
-                )
-                
-                if updated_margins:
-                    logger.info(f"✅ Словарь ГО обновлен для {len(updated_margins)} инструментов: {updated_margins}")
-                else:
-                    logger.warning("⚠️ Не удалось обновить словарь ГО из API")
+                # Обновляем словарь MARGIN_PER_LOT из API (с таймаутом 120 секунд)
+                try:
+                    updated_margins = await asyncio.wait_for(
+                        update_margins_from_api(
+                            tinkoff_client=tinkoff,
+                            instruments=state.active_instruments,
+                            storage=storage
+                        ),
+                        timeout=120.0  # 2 минуты на обновление всех инструментов
+                    )
+                    
+                    if updated_margins:
+                        logger.info(f"✅ Словарь ГО обновлен для {len(updated_margins)} инструментов: {updated_margins}")
+                    else:
+                        logger.warning("⚠️ Не удалось обновить словарь ГО из API")
+                except asyncio.TimeoutError:
+                    logger.error("⏱️ Timeout updating margins from API (120s exceeded) - continuing without update")
+                except Exception as e:
+                    logger.warning(f"⚠️ Failed to update margins from API: {e}", exc_info=True)
                 
                 # Также сохраняем рассчитанные значения маржи в state (для совместимости)
                 logger.info("📊 Calculating margins for active instruments at startup...")
-                margins = await calculate_margins_for_instruments(
-                    tinkoff=tinkoff,
-                    storage=storage,
-                    instruments=state.active_instruments
-                )
-                
-                # Сохраняем рассчитанные значения маржи в state
-                state.instrument_margins = margins
-                state.save()
-                
-                logger.info(f"✅ Margins calculated and saved for {len(margins)} instruments")
+                try:
+                    margins = await asyncio.wait_for(
+                        calculate_margins_for_instruments(
+                            tinkoff=tinkoff,
+                            storage=storage,
+                            instruments=state.active_instruments
+                        ),
+                        timeout=60.0  # 1 минута на расчет маржи
+                    )
+                    
+                    # Сохраняем рассчитанные значения маржи в state
+                    state.instrument_margins = margins
+                    state.save()
+                    
+                    logger.info(f"✅ Margins calculated and saved for {len(margins)} instruments")
+                except asyncio.TimeoutError:
+                    logger.error("⏱️ Timeout calculating margins (60s exceeded) - continuing without calculation")
+                except Exception as e:
+                    logger.warning(f"⚠️ Failed to calculate margins: {e}", exc_info=True)
             except Exception as e:
                 logger.warning(f"⚠️ Failed to update margins at startup: {e}", exc_info=True)
+                logger.warning("⚠️ Bot will continue without margin update - margins will be calculated on demand")
         
         # Run components
         try:

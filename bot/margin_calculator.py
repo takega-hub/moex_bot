@@ -78,41 +78,47 @@ async def calculate_margins_for_instruments(
             except Exception as e:
                 logger.debug(f"[{ticker}] Error getting lot_size: {e}")
             
-            # Получаем dlong/dshort из API (синхронный метод, вызываем через asyncio.to_thread)
+            # Получаем dlong/dshort и min_price_increment_amount из API (синхронный метод, вызываем через asyncio.to_thread)
             api_dlong = None
             api_dshort = None
+            api_min_price_increment = None
+            api_min_price_increment_amount = None
             try:
                 import asyncio
                 inst_info = await asyncio.to_thread(tinkoff.get_instrument_info, figi)
                 if inst_info:
                     api_dlong = inst_info.get('dlong')
                     api_dshort = inst_info.get('dshort')
+                    api_min_price_increment = inst_info.get('min_price_increment')
+                    api_min_price_increment_amount = inst_info.get('min_price_increment_amount')
             except Exception as e:
                 logger.debug(f"[{ticker}] Error getting instrument info: {e}")
             
-                    # Рассчитываем маржу для LONG и SHORT (берем максимальную)
-                    # Используем автоматический расчет стоимости пункта для похожих инструментов
-                    margin_long = get_margin_for_position(
-                        ticker=ticker,
-                        quantity=1.0,
-                        entry_price=current_price,
-                        lot_size=lot_size,
-                        dlong=api_dlong,
-                        dshort=api_dshort,
-                        is_long=True,
-                        auto_calculate_point_value_flag=True
-                    )
-                    
-                    margin_short = get_margin_for_position(
-                        ticker=ticker,
-                        quantity=1.0,
-                        entry_price=current_price,
-                        lot_size=lot_size,
-                        dlong=api_dlong,
-                        dshort=api_dshort,
-                        is_long=False,
-                        auto_calculate_point_value_flag=True
-                    )
+            # Рассчитываем маржу для LONG и SHORT (берем максимальную)
+            # ВАЖНО: Используем min_price_increment_amount (реальная стоимость пункта) если доступен
+            point_value_to_use = api_min_price_increment_amount if (api_min_price_increment_amount and api_min_price_increment_amount > 0) else api_min_price_increment
+            
+            margin_long = get_margin_for_position(
+                ticker=ticker,
+                quantity=1.0,
+                entry_price=current_price,
+                lot_size=lot_size,
+                dlong=api_dlong,
+                dshort=api_dshort,
+                is_long=True,
+                point_value=point_value_to_use
+            )
+            
+            margin_short = get_margin_for_position(
+                ticker=ticker,
+                quantity=1.0,
+                entry_price=current_price,
+                lot_size=lot_size,
+                dlong=api_dlong,
+                dshort=api_dshort,
+                is_long=False,
+                point_value=point_value_to_use
+            )
             
             # Берем максимальную маржу
             margin_per_lot = max(margin_long, margin_short) if margin_long > 0 and margin_short > 0 else (margin_long if margin_long > 0 else margin_short)

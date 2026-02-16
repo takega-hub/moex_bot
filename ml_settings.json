@@ -1,5 +1,10 @@
 {
   "confidence_threshold": 0.45,
   "min_signal_strength": "умеренное",
-  "mtf_enabled": false
+  "mtf_enabled": false,
+  "use_mtf_strategy": true,
+  "mtf_confidence_threshold_1h": 0.5,
+  "mtf_confidence_threshold_15m": 0.35,
+  "mtf_alignment_mode": "strict",
+  "mtf_require_alignment": true
 }

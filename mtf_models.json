@@ -1,0 +1,22 @@
+{
+  "RLH6": {
+    "model_1h": "xgb_RLH6_60_1h",
+    "model_15m": "rf_RLH6_15_mtf_15min"
+  },
+  "S1H6": {
+    "model_1h": "ensemble_S1H6_60_1h",
+    "model_15m": "quad_ensemble_S1H6_15_mtf_15min"
+  },
+  "IMOEXF": {
+    "model_1h": "rf_IMOEXF_60_1h",
+    "model_15m": "rf_IMOEXF_15_mtf_15min"
+  },
+  "GAZPF": {
+    "model_1h": "quad_ensemble_GAZPF_60_1h",
+    "model_15m": "rf_GAZPF_15_mtf_15min"
+  },
+  "NRG6": {
+    "model_1h": "ensemble_NRG6_60_1h",
+    "model_15m": "triple_ensemble_NRG6_15_mtf_15min"
+  }
+}

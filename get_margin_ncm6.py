@@ -130,6 +130,10 @@ def main():
             klong = extract_money_value(getattr(instrument, 'klong', None))
             kshort = extract_money_value(getattr(instrument, 'kshort', None))
             
+            # Извлекаем данные о стоимости пункта
+            min_price_increment = extract_money_value(getattr(instrument, 'min_price_increment', None))
+            min_price_increment_amount = extract_money_value(getattr(instrument, 'min_price_increment_amount', None))
+            
             print(f"\n   Коэффициенты маржи из API:")
             if dlong is not None:
                 print(f"      dlong: {dlong:.6f}")
@@ -139,6 +143,14 @@ def main():
                 print(f"      klong: {klong:.6f}")
             if kshort is not None:
                 print(f"      kshort: {kshort:.6f}")
+            
+            print(f"\n   Данные о стоимости пункта из API:")
+            if min_price_increment is not None:
+                print(f"      min_price_increment: {min_price_increment:.6f}")
+            if min_price_increment_amount is not None:
+                print(f"      min_price_increment_amount (стоимость пункта): {min_price_increment_amount:.2f} ₽")
+            else:
+                print(f"      ⚠️ min_price_increment_amount отсутствует в API")
             
             # Получаем текущую цену
             print(f"\n3️⃣ Получение текущей цены...")
@@ -167,6 +179,9 @@ def main():
             # Расчет маржи через функцию
             print(f"\n5️⃣ Расчет маржи через get_margin_for_position:")
             if current_price > 0:
+                # Используем min_price_increment_amount как point_value, если доступен
+                point_value = min_price_increment_amount if min_price_increment_amount and min_price_increment_amount > 0 else None
+                
                 calculated_margin = get_margin_for_position(
                     ticker=ticker_upper,
                     quantity=1.0,
@@ -175,7 +190,7 @@ def main():
                     dlong=dlong,
                     dshort=dshort,
                     is_long=True,
-                    auto_calculate_point_value_flag=True
+                    point_value=point_value
                 )
                 print(f"   Рассчитанная маржа (1 лот, LONG): {calculated_margin:.2f} ₽")
                 
@@ -187,9 +202,19 @@ def main():
                     dlong=dlong,
                     dshort=dshort,
                     is_long=False,
-                    auto_calculate_point_value_flag=True
+                    point_value=point_value
                 )
                 print(f"   Рассчитанная маржа (1 лот, SHORT): {calculated_margin_short:.2f} ₽")
+                
+                # Расчет через формулу: ГО = point_value * price * dlong/dshort
+                if point_value and point_value > 0:
+                    print(f"\n   Расчет через формулу ГО = point_value * price * dlong/dshort:")
+                    if dlong and dlong > 0:
+                        margin_long_formula = point_value * current_price * dlong
+                        print(f"      LONG: {point_value:.2f} * {current_price:.4f} * {dlong:.6f} = {margin_long_formula:.2f} ₽")
+                    if dshort and dshort > 0:
+                        margin_short_formula = point_value * current_price * dshort
+                        print(f"      SHORT: {point_value:.2f} * {current_price:.4f} * {dshort:.6f} = {margin_short_formula:.2f} ₽")
             
             # Пробуем разные варианты расчета
             print(f"\n6️⃣ Варианты расчета маржи:")
@@ -226,6 +251,19 @@ def main():
                 print(f"      MARGIN_PER_LOT[\"{ticker_upper}\"] = <значение_из_терминала>")
             else:
                 print(f"   ✅ Значение уже есть в словаре: {dict_margin:.2f} ₽/лот")
+                print(f"   💡 Проверьте актуальность значения в терминале")
+            
+            if dict_point_value == 0:
+                if min_price_increment_amount and min_price_increment_amount > 0:
+                    print(f"\n   💡 Стоимость пункта из API: {min_price_increment_amount:.2f} ₽")
+                    print(f"      Добавьте в bot/margin_rates.py:")
+                    print(f"      POINT_VALUE[\"{ticker_upper}\"] = {min_price_increment_amount:.2f}")
+                else:
+                    print(f"\n   ⚠️ Стоимость пункта не найдена в API")
+                    print(f"      Проверьте значение в терминале Tinkoff и добавьте в bot/margin_rates.py:")
+                    print(f"      POINT_VALUE[\"{ticker_upper}\"] = <стоимость_пункта_из_терминала>")
+            else:
+                print(f"\n   ✅ Стоимость пункта уже есть в словаре: {dict_point_value:.2f} ₽")
                 print(f"   💡 Проверьте актуальность значения в терминале")
             
         except Exception as e:

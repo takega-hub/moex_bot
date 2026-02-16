@@ -319,11 +319,38 @@ class TelegramBot:
                         # Fallback: используем справочник реальных коэффициентов маржи
                         if margin is None or margin == 0:
                             from bot.margin_rates import get_margin_for_position
+                            
+                            # Получаем dlong/dshort и min_price_increment_amount из API для точного расчета
+                            api_dlong = None
+                            api_dshort = None
+                            api_min_price_increment_amount = None
+                            try:
+                                inst_info = await asyncio.wait_for(
+                                    asyncio.to_thread(self.tinkoff.get_instrument_info, figi),
+                                    timeout=10.0
+                                )
+                                if inst_info:
+                                    api_dlong = inst_info.get('dlong')
+                                    api_dshort = inst_info.get('dshort')
+                                    api_min_price_increment_amount = inst_info.get('min_price_increment_amount')
+                            except Exception as e:
+                                logger.debug(f"Error getting instrument info for {ticker}: {e}")
+                            
+                            # Определяем направление позиции
+                            is_long = side == "Buy"
+                            
+                            # ВАЖНО: Используем min_price_increment_amount (реальная стоимость пункта) если доступен
+                            point_value_to_use = api_min_price_increment_amount if (api_min_price_increment_amount and api_min_price_increment_amount > 0) else None
+                            
                             margin = get_margin_for_position(
                                 ticker=ticker,
                                 quantity=abs_quantity,
                                 entry_price=entry_price,
-                                lot_size=lot_size
+                                lot_size=lot_size,
+                                dlong=api_dlong,
+                                dshort=api_dshort,
+                                is_long=is_long,
+                                point_value=point_value_to_use
                             )
                             margin_source = "margin_rates_dict"
                         
@@ -459,54 +486,109 @@ class TelegramBot:
                     except:
                         pass
                     
-                    # Получаем dlong/dshort и min_price_increment из API (если доступно)
+                    # ВАЖНО: Используем update_margin_for_instrument_from_api для получения правильного ГО
+                    # Это использует get_futures_margin API, как в скрипте get_ticker_info.py
+                    from bot.margin_rates import get_margin_for_position, update_margin_for_instrument_from_api
+                    
                     api_dlong = None
                     api_dshort = None
-                    min_price_increment = None
-                    try:
-                        inst_info = await asyncio.wait_for(
-                            asyncio.to_thread(self.tinkoff.get_instrument_info, figi),
-                            timeout=5.0
-                        )
-                        if inst_info:
-                            api_dlong = inst_info.get('dlong')
-                            api_dshort = inst_info.get('dshort')
-                            min_price_increment = inst_info.get('min_price_increment')
-                    except:
-                        pass
+                    api_min_price_increment_amount = None
+                    inst_info = None
                     
-                    # ВАЖНО: Если min_price_increment из API = 0 или None, используем словарь POINT_VALUE
-                    from bot.margin_rates import get_margin_per_lot_from_api_data, POINT_VALUE
-                    if not min_price_increment or min_price_increment == 0:
-                        if ticker.upper() in POINT_VALUE and POINT_VALUE[ticker.upper()] > 0:
-                            min_price_increment = POINT_VALUE[ticker.upper()]
-                    
-                    # Рассчитываем маржу для LONG и SHORT (берем большее значение)
+                    # ПРИОРИТЕТ 1: Получаем ГО напрямую через get_futures_margin API (initial_margin_on_buy/sell)
+                    # ВАЖНО: Это готовые значения ГО для 1 лота, обновляемые биржей каждый день
                     margin_for_1_lot = None
-                    
-                    # Сначала пробуем через min_price_increment (из API или словаря)
-                    if min_price_increment and min_price_increment > 0:
-                        margin_long = get_margin_per_lot_from_api_data(
-                            ticker=ticker,
-                            current_price=current_price,
-                            point_value=min_price_increment,
-                            dlong=api_dlong,
-                            dshort=api_dshort,
-                            is_long=True
+                    try:
+                        # Пробуем получить initial_margin_on_buy/sell напрямую из get_futures_margin
+                        futures_margin_info = await asyncio.wait_for(
+                            asyncio.to_thread(self.tinkoff.get_futures_margin, figi),
+                            timeout=10.0
                         )
-                        margin_short = get_margin_per_lot_from_api_data(
-                            ticker=ticker,
-                            current_price=current_price,
-                            point_value=min_price_increment,
-                            dlong=api_dlong,
-                            dshort=api_dshort,
-                            is_long=False
-                        )
-                        if margin_long or margin_short:
-                            margin_for_1_lot = max(margin_long or 0, margin_short or 0) if (margin_long and margin_short) else (margin_long or margin_short or 0)
+                        if futures_margin_info:
+                            initial_margin_buy = futures_margin_info.get('initial_margin_on_buy')
+                            initial_margin_sell = futures_margin_info.get('initial_margin_on_sell')
+                            
+                            logger.debug(
+                                f"[show_status] {ticker}: get_futures_margin вернул: "
+                                f"initial_margin_on_buy={initial_margin_buy}, initial_margin_on_sell={initial_margin_sell}, "
+                                f"все ключи: {list(futures_margin_info.keys())}"
+                            )
+                            
+                            if initial_margin_buy is not None and initial_margin_buy > 0:
+                                if initial_margin_sell is not None and initial_margin_sell > 0:
+                                    # Берем максимальное значение для покрытия обоих направлений
+                                    margin_for_1_lot = max(initial_margin_buy, initial_margin_sell)
+                                    logger.info(
+                                        f"[show_status] {ticker}: ✅ ГО получено через get_futures_margin: "
+                                        f"{margin_for_1_lot:.2f} ₽/лот (LONG: {initial_margin_buy:.2f}, SHORT: {initial_margin_sell:.2f}, max)"
+                                    )
+                                else:
+                                    margin_for_1_lot = initial_margin_buy
+                                    logger.info(f"[show_status] {ticker}: ✅ ГО получено через get_futures_margin (LONG): {margin_for_1_lot:.2f} ₽/лот")
+                            elif initial_margin_sell is not None and initial_margin_sell > 0:
+                                margin_for_1_lot = initial_margin_sell
+                                logger.info(f"[show_status] {ticker}: ✅ ГО получено через get_futures_margin (SHORT): {margin_for_1_lot:.2f} ₽/лот")
+                            else:
+                                logger.warning(
+                                    f"[show_status] {ticker}: ⚠️ get_futures_margin не вернул initial_margin_on_buy/sell. "
+                                    f"Доступные ключи: {list(futures_margin_info.keys())}"
+                                )
+                    except asyncio.TimeoutError:
+                        logger.debug(f"[show_status] {ticker}: Timeout при получении ГО через get_futures_margin")
+                    except Exception as e:
+                        logger.debug(f"[show_status] {ticker}: Ошибка при получении ГО через get_futures_margin: {e}")
                     
-                    # Если не получилось через min_price_increment, используем стандартную функцию
+                    # ПРИОРИТЕТ 2: Если не получилось через get_futures_margin, используем update_margin_for_instrument_from_api
                     if not margin_for_1_lot or margin_for_1_lot <= 0:
+                        try:
+                            margin_from_api = await asyncio.wait_for(
+                                update_margin_for_instrument_from_api(
+                                    self.tinkoff,
+                                    ticker,
+                                    figi,
+                                    current_price,
+                                    True  # is_long
+                                ),
+                                timeout=10.0
+                            )
+                            if margin_from_api and margin_from_api > 0:
+                                margin_for_1_lot = margin_from_api
+                                logger.debug(f"[show_status] {ticker}: ГО получено через update_margin_for_instrument_from_api: {margin_for_1_lot:.2f} ₽/лот")
+                        except asyncio.TimeoutError:
+                            logger.debug(f"[show_status] {ticker}: Timeout при получении ГО через update_margin_for_instrument_from_api")
+                        except Exception as e:
+                            logger.debug(f"[show_status] {ticker}: Ошибка при получении ГО через update_margin_for_instrument_from_api: {e}")
+                    
+                    # ПРИОРИТЕТ 2: Если не получилось через get_futures_margin, используем get_instrument_info и формулу
+                    if not margin_for_1_lot or margin_for_1_lot <= 0:
+                        try:
+                            inst_info = await asyncio.wait_for(
+                                asyncio.to_thread(self.tinkoff.get_instrument_info, figi),
+                                timeout=10.0
+                            )
+                            if inst_info:
+                                api_dlong = inst_info.get('dlong')
+                                api_dshort = inst_info.get('dshort')
+                                api_min_price_increment_amount = inst_info.get('min_price_increment_amount')
+                        except:
+                            pass
+                        
+                        # Пробуем получить min_price_increment_amount через get_futures_margin
+                        if not api_min_price_increment_amount or api_min_price_increment_amount <= 0:
+                            try:
+                                futures_margin_info = await asyncio.wait_for(
+                                    asyncio.to_thread(self.tinkoff.get_futures_margin, figi),
+                                    timeout=10.0
+                                )
+                                if futures_margin_info and 'min_price_increment_amount' in futures_margin_info:
+                                    api_min_price_increment_amount = futures_margin_info['min_price_increment_amount']
+                                    logger.debug(f"[show_status] {ticker}: Получен min_price_increment_amount из get_futures_margin: {api_min_price_increment_amount:.6f} ₽")
+                            except:
+                                pass
+                        
+                        # Используем get_margin_for_position с правильным point_value
+                        point_value_to_use = api_min_price_increment_amount if (api_min_price_increment_amount and api_min_price_increment_amount > 0) else None
+                        
                         margin_long = get_margin_for_position(
                             ticker=ticker,
                             quantity=1.0,
@@ -514,7 +596,8 @@ class TelegramBot:
                             lot_size=lot_size,
                             dlong=api_dlong,
                             dshort=api_dshort,
-                            is_long=True
+                            is_long=True,
+                            point_value=point_value_to_use
                         )
                         
                         margin_short = get_margin_for_position(
@@ -524,11 +607,22 @@ class TelegramBot:
                             lot_size=lot_size,
                             dlong=api_dlong,
                             dshort=api_dshort,
-                            is_long=False
+                            is_long=False,
+                            point_value=point_value_to_use
                         )
                         
                         # Берем максимальную маржу (LONG или SHORT)
                         margin_for_1_lot = max(margin_long, margin_short) if margin_long > 0 and margin_short > 0 else (margin_long if margin_long > 0 else margin_short)
+                        
+                        # Логируем, если маржа все еще = 0 (для диагностики)
+                        if margin_for_1_lot <= 0:
+                            logger.warning(
+                                f"[show_status] {ticker}: ⚠️ margin_for_1_lot = 0 после всех попыток! "
+                                f"margin_long={margin_long:.2f}, margin_short={margin_short:.2f}, "
+                                f"point_value_to_use={point_value_to_use}, "
+                                f"dlong={api_dlong}, dshort={api_dshort}, "
+                                f"price={current_price:.2f}, lot_size={lot_size}"
+                            )
                     
                     # Рассчитываем стоимость лота
                     lot_value = current_price * lot_size
@@ -544,10 +638,11 @@ class TelegramBot:
                             "total_required": total_required,
                             "price": current_price
                         })
-                        min_margin_total = max(min_margin_total, total_required)
+                        # ВАЖНО: min_margin_total теперь содержит только ГО (без стоимости лота)
+                        min_margin_total = max(min_margin_total, margin)
                 
-                # Сортируем по общей требуемой сумме (ГО + стоимость лота) от большего к меньшему
-                instrument_margins.sort(key=lambda x: x["total_required"], reverse=True)
+                # Сортируем по ГО от большего к меньшему
+                instrument_margins.sort(key=lambda x: x["margin"], reverse=True)
                 
                 # Выводим информацию
                 for inst_margin in instrument_margins:
@@ -557,19 +652,18 @@ class TelegramBot:
                     total_required = inst_margin["total_required"]
                     price = inst_margin["price"]
                     
-                    # Проверяем, достаточно ли баланса (ГО + стоимость лота)
-                    if wallet_balance >= total_required:
+                    # Проверяем, достаточно ли баланса для ГО
+                    # ВАЖНО: Показываем только ГО (гарантийное обеспечение), это сумма необходимая для сделки
+                    if wallet_balance >= margin:
                         status_emoji = "✅"
-                        # Рассчитываем максимальное количество лотов с учетом ГО + стоимости лота
-                        max_lots = int(wallet_balance / total_required)
-                        status_text += f"{status_emoji} {ticker}: {total_required:.2f} ₽/лот "
-                        status_text += f"(ГО: {margin:.2f} ₽ + лот: {lot_value:.2f} ₽) "
+                        # Рассчитываем максимальное количество лотов с учетом ГО
+                        max_lots = int(wallet_balance / margin)
+                        status_text += f"{status_emoji} {ticker}: {margin:.2f} ₽/лот "
                         status_text += f"(до {max_lots} лот)\n"
                     else:
                         status_emoji = "❌"
-                        shortage = total_required - wallet_balance
-                        status_text += f"{status_emoji} {ticker}: {total_required:.2f} ₽/лот "
-                        status_text += f"(ГО: {margin:.2f} ₽ + лот: {lot_value:.2f} ₽) "
+                        shortage = margin - wallet_balance
+                        status_text += f"{status_emoji} {ticker}: {margin:.2f} ₽/лот "
                         status_text += f"(не хватает {shortage:.2f} ₽)\n"
                 
                 if min_margin_total > 0:
@@ -617,38 +711,28 @@ class TelegramBot:
                         if mtf_models.get("model_1h") and mtf_models.get("model_15m"):
                             status_text += f"Инструмент: {ticker} | MTF: {mtf_models['model_1h']} + {mtf_models['model_15m']}\n"
                             status_text += f"   🎯 Уверенность: 1h≥{self.settings.ml_strategy.mtf_confidence_threshold_1h*100:.0f}%, 15m≥{self.settings.ml_strategy.mtf_confidence_threshold_15m*100:.0f}%\n"
-                            
-                            # Показываем рассчитанную маржу
-                            margin_per_lot = self.state.instrument_margins.get(ticker)
-                            if margin_per_lot and margin_per_lot > 0:
-                                status_text += f"   💰 Маржа: {margin_per_lot:.2f} ₽/лот\n"
                         else:
                             status_text += f"Инструмент: {ticker} | MTF: ⚠️ Модели не выбраны\n"
                 
                 if not is_mtf:
                     # Обычная стратегия
-                model_path = self.state.instrument_models.get(ticker)
-                if model_path and Path(model_path).exists():
-                    model_name = Path(model_path).stem
-                    ml_settings = self.settings.get_ml_settings_for_instrument(ticker)
-                    status_text += f"Инструмент: {ticker} | Модель: {model_name}\n"
-                    status_text += f"   🎯 Уверенность: ≥{ml_settings.confidence_threshold*100:.0f}%\n"
-                else:
-                    models = self.model_manager.find_models_for_instrument(ticker)
-                    if models:
-                        model_path = str(models[0])
-                        self.model_manager.apply_model(ticker, model_path)
-                        model_name = models[0].stem
+                    model_path = self.state.instrument_models.get(ticker)
+                    if model_path and Path(model_path).exists():
+                        model_name = Path(model_path).stem
                         ml_settings = self.settings.get_ml_settings_for_instrument(ticker)
-                        status_text += f"Инструмент: {ticker} | Модель: {model_name} (авто)\n"
+                        status_text += f"Инструмент: {ticker} | Модель: {model_name}\n"
                         status_text += f"   🎯 Уверенность: ≥{ml_settings.confidence_threshold*100:.0f}%\n"
                     else:
-                        status_text += f"Инструмент: {ticker} | Модель: ❌ Не найдена\n"
-                
-                # Показываем рассчитанную маржу
-                margin_per_lot = self.state.instrument_margins.get(ticker)
-                if margin_per_lot and margin_per_lot > 0:
-                    status_text += f"   💰 Маржа: {margin_per_lot:.2f} ₽/лот\n"
+                        models = self.model_manager.find_models_for_instrument(ticker)
+                        if models:
+                            model_path = str(models[0])
+                            self.model_manager.apply_model(ticker, model_path)
+                            model_name = models[0].stem
+                            ml_settings = self.settings.get_ml_settings_for_instrument(ticker)
+                            status_text += f"Инструмент: {ticker} | Модель: {model_name} (авто)\n"
+                            status_text += f"   🎯 Уверенность: ≥{ml_settings.confidence_threshold*100:.0f}%\n"
+                        else:
+                            status_text += f"Инструмент: {ticker} | Модель: ❌ Не найдена\n"
                 
                 # Cooldown
                 cooldown_info = self.state.get_cooldown_info(ticker) if hasattr(self.state, 'get_cooldown_info') else None
@@ -870,44 +954,44 @@ class TelegramBot:
         """Показывает настройки инструментов."""
         try:
             logger.debug("show_instruments_settings: Starting...")
-        # Получаем все известные инструменты
-        all_possible = list(set(self.state.known_instruments + self.state.active_instruments))
-        all_possible = sorted(all_possible)
+            # Получаем все известные инструменты
+            all_possible = list(set(self.state.known_instruments + self.state.active_instruments))
+            all_possible = sorted(all_possible)
             logger.debug(f"show_instruments_settings: Found {len(all_possible)} instruments")
-        
-        keyboard = []
-        for ticker in all_possible:
-            status = "✅" if ticker in self.state.active_instruments else "❌"
-            button_text = f"{status} {ticker}"
             
-            # Проверяем cooldown
-            if hasattr(self.state, 'get_cooldown_info'):
-                cooldown_info = self.state.get_cooldown_info(ticker)
-                if cooldown_info and cooldown_info.get("active"):
-                    hours_left = cooldown_info.get("hours_left", 0)
-                    if hours_left < 1:
-                        minutes_left = int(hours_left * 60)
-                        button_text += f" ❄️({minutes_left}м)"
-                    else:
-                        button_text += f" ❄️({hours_left:.1f}ч)"
+            keyboard = []
+            for ticker in all_possible:
+                status = "✅" if ticker in self.state.active_instruments else "❌"
+                button_text = f"{status} {ticker}"
+                
+                # Проверяем cooldown
+                if hasattr(self.state, 'get_cooldown_info'):
+                    cooldown_info = self.state.get_cooldown_info(ticker)
+                    if cooldown_info and cooldown_info.get("active"):
+                        hours_left = cooldown_info.get("hours_left", 0)
+                        if hours_left < 1:
+                            minutes_left = int(hours_left * 60)
+                            button_text += f" ❄️({minutes_left}м)"
+                        else:
+                            button_text += f" ❄️({hours_left:.1f}ч)"
+                
+                keyboard.append([InlineKeyboardButton(button_text, callback_data=f"toggle_{ticker}")])
+                
+                # Кнопка снятия cooldown
+                if hasattr(self.state, 'get_cooldown_info'):
+                    cooldown_info = self.state.get_cooldown_info(ticker)
+                    if cooldown_info and cooldown_info.get("active"):
+                        keyboard.append([InlineKeyboardButton(
+                            f"🔥 Снять разморозку {ticker}",
+                            callback_data=f"remove_cooldown_{ticker}"
+                        )])
             
-            keyboard.append([InlineKeyboardButton(button_text, callback_data=f"toggle_{ticker}")])
+            keyboard.append([InlineKeyboardButton("➕ Добавить новый инструмент", callback_data="add_ticker")])
+            keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="status_info")])
+            keyboard.append([InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")])
             
-            # Кнопка снятия cooldown
-            if hasattr(self.state, 'get_cooldown_info'):
-                cooldown_info = self.state.get_cooldown_info(ticker)
-                if cooldown_info and cooldown_info.get("active"):
-                    keyboard.append([InlineKeyboardButton(
-                        f"🔥 Снять разморозку {ticker}",
-                        callback_data=f"remove_cooldown_{ticker}"
-                    )])
-        
-        keyboard.append([InlineKeyboardButton("➕ Добавить новый инструмент", callback_data="add_ticker")])
-        keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="status_info")])
-        keyboard.append([InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")])
-        
             logger.debug(f"show_instruments_settings: Sending message with {len(keyboard)} buttons")
-        await self.safe_edit_message(query, "⚙️ Настройка активных инструментов (макс 5):", reply_markup=InlineKeyboardMarkup(keyboard))
+            await self.safe_edit_message(query, "⚙️ Настройка активных инструментов (макс 5):", reply_markup=InlineKeyboardMarkup(keyboard))
             logger.debug("show_instruments_settings: Completed successfully")
         except Exception as e:
             logger.error(f"Error in show_instruments_settings: {e}", exc_info=True)
@@ -2595,6 +2679,6 @@ class TelegramBot:
         except Exception as e:
             logger.error(f"[retrain_models_async] Error retraining models for {ticker}: {e}", exc_info=True)
             try:
-            await self.send_notification(f"❌ Ошибка при обучении моделей для {ticker}: {str(e)}", user_id)
+                await self.send_notification(f"❌ Ошибка при обучении моделей для {ticker}: {str(e)}", user_id)
             except Exception as send_error:
                 logger.error(f"[retrain_models_async] Error sending Telegram message: {send_error}")

@@ -125,7 +125,7 @@ class TradingLoop:
                 for instrument in self.state.active_instruments:
                     logger.debug(f"🔄 About to process instrument: {instrument}")
                     try:
-                    await self.process_instrument(instrument)
+                        await self.process_instrument(instrument)
                     except Exception as e:
                         logger.error(f"❌ Error processing {instrument}: {e}", exc_info=True)
                     if len(self.state.active_instruments) > 1:
@@ -207,7 +207,7 @@ class TradingLoop:
                             )
                             continue
                         
-                            ticker = instrument_info.get("ticker")
+                        ticker = instrument_info.get("ticker")
                         if not ticker:
                             logger.warning(
                                 f"⚠️ Position found with FIGI {figi} but ticker is missing. "
@@ -217,7 +217,7 @@ class TradingLoop:
                         
                         if ticker in self.state.active_instruments:
                             found_tickers.append(ticker)
-                                await self.check_position(figi, position)
+                            await self.check_position(figi, position)
                         else:
                             skipped_tickers.append(ticker)
                             logger.warning(
@@ -285,26 +285,26 @@ class TradingLoop:
                 try:
                     instrument_data = await asyncio.wait_for(
                         asyncio.to_thread(
-                    self.tinkoff.find_instrument,
-                    instrument,
-                    instrument_type="futures"
+                            self.tinkoff.find_instrument,
+                            instrument,
+                            instrument_type="futures"
                         ),
                         timeout=30.0
-                )
-                if instrument_data:
+                    )
+                    if instrument_data:
                         logger.info(f"[{instrument}] Found via API, saving to storage...")
                         await asyncio.wait_for(
                             asyncio.to_thread(
-                        self.storage.save_instrument,
-                        figi=instrument_data["figi"],
-                        ticker=instrument,
-                        name=instrument_data["name"],
-                        instrument_type=instrument_data["instrument_type"]
+                                self.storage.save_instrument,
+                                figi=instrument_data["figi"],
+                                ticker=instrument,
+                                name=instrument_data["name"],
+                                instrument_type=instrument_data["instrument_type"]
                             ),
                             timeout=10.0
-                    )
-                    instrument_info = instrument_data
-                else:
+                        )
+                        instrument_info = instrument_data
+                    else:
                         logger.warning(f"[{instrument}] Instrument not found via API")
                         return
                 except asyncio.TimeoutError:
@@ -368,8 +368,11 @@ class TradingLoop:
             # Initialize strategy if needed
             if instrument not in self.strategies:
                 logger.info(f"[{instrument}] 🔄 Strategy not loaded, initializing...")
-                    from pathlib import Path
-                    models_dir = Path("ml_models")
+                from pathlib import Path
+                models_dir = Path("ml_models")
+                
+                # Инициализируем model_path как None (будет установлена позже)
+                model_path = None
                 
                 # Проверяем, включена ли MTF стратегия
                 use_mtf = self.settings.ml_strategy.use_mtf_strategy
@@ -415,6 +418,9 @@ class TradingLoop:
                                 require_alignment=self.settings.ml_strategy.mtf_require_alignment,
                             )
                             logger.info(f"[{instrument}] ✅ MTF strategy loaded successfully")
+                            # MTF стратегия успешно загружена, пропускаем загрузку обычной модели
+                            model_path = None
+                            use_mtf = True  # Устанавливаем флаг, чтобы не искать обычную модель
                         except Exception as e:
                             logger.error(f"[{instrument}] ❌ Failed to load MTF strategy: {e}", exc_info=True)
                             logger.warning(f"[{instrument}] Falling back to single timeframe strategy")
@@ -426,14 +432,40 @@ class TradingLoop:
                         )
                         use_mtf = False
                 
+                # ВАЖНО: Если MTF стратегия успешно загружена, не ищем обычную модель
                 if not use_mtf:
                     # Используем обычную стратегию (15m)
                     model_path = self.state.instrument_models.get(instrument)
                     if not model_path:
-                    models = list(models_dir.glob(f"*_{instrument}_*.pkl"))
-                    if models:
-                        model_path = str(models[0])
-                        self.state.instrument_models[instrument] = model_path
+                        # Используем более гибкий поиск моделей (учитываем регистр и разные форматы)
+                        instrument_upper = instrument.upper()
+                        patterns = [
+                            f"*_{instrument_upper}_*.pkl",  # Например: quad_ensemble_RLH6_60_1h.pkl
+                            f"*{instrument_upper}*.pkl"      # Например: xgb_RLH6_60_1h.pkl
+                        ]
+                        models = []
+                        for pattern in patterns:
+                            found = list(models_dir.glob(pattern))
+                            if found:
+                                logger.debug(f"[{instrument}] Паттерн '{pattern}' нашел {len(found)} моделей: {[f.name for f in found[:3]]}")
+                            models.extend(found)
+                        # Убираем дубликаты и сортируем по времени модификации (новые первыми)
+                        models = sorted(set(models), key=lambda x: x.stat().st_mtime, reverse=True)
+                        if models:
+                            model_path = str(models[0])
+                            self.state.instrument_models[instrument] = model_path
+                            logger.info(f"[{instrument}] ✅ Найдена модель: {models[0].name}")
+                        else:
+                            logger.warning(f"[{instrument}] ⚠️ Модели не найдены. Проверяем наличие файлов в {models_dir}...")
+                            all_pkl_files = list(models_dir.glob("*.pkl"))
+                            if all_pkl_files:
+                                logger.debug(f"[{instrument}] Всего .pkl файлов в директории: {len(all_pkl_files)}")
+                                # Показываем файлы, содержащие тикер (без учета регистра)
+                                matching_files = [f for f in all_pkl_files if instrument_upper in f.name.upper()]
+                                if matching_files:
+                                    logger.warning(f"[{instrument}] ⚠️ Найдены файлы с тикером {instrument_upper}: {[f.name for f in matching_files[:5]]}")
+                                else:
+                                    logger.warning(f"[{instrument}] ⚠️ Файлы с тикером {instrument_upper} не найдены")
                 
                 if model_path:
                     logger.info(f"[{instrument}] 🔄 Loading model: {model_path}")
@@ -452,12 +484,17 @@ class TradingLoop:
                     except Exception as e:
                         logger.error(f"[{instrument}] ❌ Failed to load model: {e}", exc_info=True)
                         return
-                else:
+                elif not use_mtf:
+                    # Показываем все доступные модели для диагностики только если не загружена MTF стратегия
+                    all_models = list(models_dir.glob("*.pkl"))
                     logger.warning(
-                        f"[{instrument}] ⚠️ No model found. "
-                        f"Search pattern: *_{instrument}_*.pkl in ml_models/"
+                        f"[{instrument}] ⚠️ No model found for {instrument}. "
+                        f"Search patterns: *_{instrument.upper()}_*.pkl, *{instrument.upper()}*.pkl in ml_models/"
                     )
+                    if all_models:
+                        logger.debug(f"[{instrument}] Available models in ml_models/: {[m.name for m in all_models[:10]]}")
                     return
+                # Если use_mtf = True, значит MTF стратегия уже загружена, продолжаем без обычной модели
             
             # Generate signal
             strategy = self.strategies.get(instrument)
@@ -530,14 +567,14 @@ class TradingLoop:
                 )
             else:
                 # Обычная стратегия
-            signal = await asyncio.to_thread(
-                strategy.generate_signal,
-                row=row,
-                df=df_for_signal,
-                has_position=has_pos,
-                current_price=current_price,
-                leverage=self.settings.leverage
-            )
+                signal = await asyncio.to_thread(
+                    strategy.generate_signal,
+                    row=row,
+                    df=df_for_signal,
+                    has_position=has_pos,
+                    current_price=current_price,
+                    leverage=self.settings.leverage
+                )
             
             if not signal:
                 # Log detailed reason why signal wasn't generated
@@ -690,16 +727,16 @@ class TradingLoop:
                 )
                 if instrument_info:
                     lot_size = instrument_info.get('lot', 1.0)
-            if lot_size <= 0:
+                    if lot_size <= 0:
                         lot_size = 1.0
                     logger.info(
                         f"[{instrument}] 📊 Instrument info: lot={lot_size}, "
                         f"min_price_increment={instrument_info.get('min_price_increment', 0.01)}, "
                         f"ticker={instrument_info.get('ticker', 'N/A')}"
                     )
-                    # Логируем margin-related fields, если они есть
+                    # Логируем margin-related fields, если они есть (только на debug уровне)
                     if 'margin_fields' in instrument_info and instrument_info['margin_fields']:
-                        logger.info(
+                        logger.debug(
                             f"[{instrument}] 📊 Instrument margin-related fields found: "
                             f"{list(instrument_info['margin_fields'].keys())}"
                         )
@@ -918,9 +955,10 @@ class TradingLoop:
             # Определяем направление позиции
             is_long = signal.action == "LONG"
             
-            # ОБНОВЛЯЕМ ГО из API перед открытием позиции (автоматически по формуле)
-            logger.info(f"[{instrument}] 🔄 Обновление ГО из API перед открытием позиции...")
-            updated_margin = await update_margin_for_instrument_from_api(
+            # ВАЖНО: Определяем ГО автоматически из API перед открытием позиции
+            # Используем get_futures_margin API или формулу, НЕ словари!
+            logger.info(f"[{instrument}] 🔄 Автоматическое определение ГО из API перед открытием позиции...")
+            margin_per_lot = await update_margin_for_instrument_from_api(
                 tinkoff_client=self.tinkoff,
                 ticker=instrument,
                 figi=figi,
@@ -928,76 +966,78 @@ class TradingLoop:
                 is_long=is_long
             )
             
-            if updated_margin:
-                logger.info(f"[{instrument}] ✅ ГО обновлено из API: {updated_margin:.2f} ₽/лот")
-            else:
-                logger.warning(f"[{instrument}] ⚠️ Не удалось обновить ГО из API, используем существующее значение из словаря")
+            margin_source = "api_automatic"
             
-            # Теперь получаем маржу (будет использовано обновленное значение из словаря)
-            # Передаем dlong/dshort из API для расчета через стоимость пункта (если словарь пуст)
-            api_dlong = instrument_info.get('dlong', None) if instrument_info else None
-            api_dshort = instrument_info.get('dshort', None) if instrument_info else None
-            api_min_price_increment = instrument_info.get('min_price_increment', None) if instrument_info else None
-            
-            margin_per_lot = get_margin_for_position(
-                ticker=instrument,
-                quantity=1.0,
-                entry_price=current_price,
-                lot_size=lot_size,
-                dlong=api_dlong,
-                dshort=api_dshort,
-                is_long=is_long,
-                point_value=api_min_price_increment
-            )
-            margin_source = "dictionary_updated_from_api"
+            # Если не удалось получить через get_futures_margin, пробуем через формулу
+            if not margin_per_lot or margin_per_lot <= 0:
+                logger.warning(f"[{instrument}] ⚠️ Не удалось получить ГО через get_futures_margin, пробуем формулу...")
+                
+                # Получаем данные для расчета по формуле
+                api_dlong = instrument_info.get('dlong', None) if instrument_info else None
+                api_dshort = instrument_info.get('dshort', None) if instrument_info else None
+                api_min_price_increment = instrument_info.get('min_price_increment', None) if instrument_info else None
+                api_min_price_increment_amount = instrument_info.get('min_price_increment_amount', None) if instrument_info else None
+                
+                # ВАЖНО: Используем min_price_increment_amount (реальная стоимость пункта) если доступен
+                point_value_to_use = api_min_price_increment_amount if (api_min_price_increment_amount and api_min_price_increment_amount > 0) else api_min_price_increment
+                
+                # Рассчитываем по формуле
+                margin_per_lot = get_margin_for_position(
+                    ticker=instrument,
+                    quantity=1.0,
+                    entry_price=current_price,
+                    lot_size=lot_size,
+                    dlong=api_dlong,
+                    dshort=api_dshort,
+                    is_long=is_long,
+                    point_value=point_value_to_use
+                )
+                margin_source = "formula_calculation"
             
             if margin_per_lot > 0:
                 logger.info(
-                    f"[{instrument}] ✅ Using margin from dictionary: "
-                    f"{margin_per_lot:.2f} руб per lot"
+                    f"[{instrument}] ✅ ГО определено автоматически: "
+                    f"{margin_per_lot:.2f} ₽/лот (источник: {margin_source})"
                 )
             else:
-                # Если в словаре нет значения, пробуем API (но с предупреждением)
-                if instrument_info and 'dlong' in instrument_info and 'dshort' in instrument_info:
-                    if is_long:
-                        api_margin = instrument_info.get('dlong', 0.0)
-                    else:
-                        api_margin = instrument_info.get('dshort', 0.0)
-                    
-                    if api_margin > 0:
-                        logger.warning(
-                            f"[{instrument}] ⚠️ Using API margin ({'dlong' if is_long else 'dshort'}): "
-                            f"{api_margin:.2f} руб - это может быть НЕВЕРНО! "
-                            f"Проверьте значение в терминале и обновите словарь."
-                        )
-                        margin_per_lot = api_margin
-                        margin_source = "API (unverified)"
-            
-            # Если справочник тоже вернул 0, используем консервативный коэффициент
-            if margin_per_lot <= 0:
+                # Последний fallback: используем консервативный коэффициент
+                logger.warning(f"[{instrument}] ⚠️ Не удалось определить ГО автоматически, используем fallback расчет")
                 margin_rate = 0.25  # 25% margin requirement (very conservative, actual is ~12%)
-            position_value_per_lot = current_price * lot_size
-            margin_per_lot = position_value_per_lot * margin_rate
-                margin_source = "calculated"
+                position_value_per_lot = current_price * lot_size
+                margin_per_lot = position_value_per_lot * margin_rate
+                margin_source = "fallback_calculated"
                 logger.warning(
-                    f"[{instrument}] ⚠️ No margin data in API or dictionary, using calculated: "
-                    f"{margin_per_lot:.2f} руб per lot (rate: {margin_rate*100:.0f}%)"
+                    f"[{instrument}] ⚠️ Fallback расчет ГО (нет данных из API): "
+                    f"{margin_per_lot:.2f} ₽/лот (коэффициент: {margin_rate*100:.0f}%)"
                 )
             
-            # Добавляем небольшой запас маржи для учета вариационной маржи и других требований биржи
-            # Если маржа из API - используем минимальный запас (10%), т.к. это точное значение биржи
-            # Если из словаря или расчетная - используем больший запас (20%)
-            if margin_source.startswith("API"):
-                safety_multiplier = 1.1  # 10% запас для API значений (они точные)
+            # ВАЖНО: initial_margin_on_buy/sell из get_futures_margin - это готовые значения ГО от биржи
+            # Они уже учитывают все требования (волатильность, фандинг, лимиты риска)
+            # НЕ нужно добавлять запас - биржа гарантирует, что этих средств хватит!
+            # Запас добавляем только для формул и fallback расчетов
+            if margin_source == "api_automatic":
+                # НЕ добавляем запас - это точное значение биржи, готовое к использованию
+                safety_multiplier = 1.0  # Без запаса - используем значение биржи как есть
+                logger.info(
+                    f"[{instrument}] ✅ Используем ГО напрямую из get_futures_margin (без запаса): "
+                    f"{margin_per_lot:.2f} ₽/лот - готовое значение биржи"
+                )
+            elif margin_source == "formula_calculation":
+                safety_multiplier = 1.15  # 15% запас для формулы (может быть неточной)
+                original_margin = margin_per_lot
+                margin_per_lot = margin_per_lot * safety_multiplier
+                logger.info(
+                    f"[{instrument}] Используем ГО из формулы с запасом {safety_multiplier*100:.0f}%: "
+                    f"{margin_per_lot:.2f} ₽/лот (исходное: {original_margin:.2f} ₽)"
+                )
             else:
-                safety_multiplier = 1.2  # 20% запас для словаря/расчета
-            
-            original_margin = margin_per_lot
-            margin_per_lot = margin_per_lot * safety_multiplier
-            logger.info(
-                f"[{instrument}] Using margin from {margin_source} with {safety_multiplier*100:.0f}% safety buffer: "
-                f"{margin_per_lot:.2f} руб per lot (original: {original_margin:.2f} руб)"
-            )
+                safety_multiplier = 1.2  # 20% запас для fallback расчета
+                original_margin = margin_per_lot
+                margin_per_lot = margin_per_lot * safety_multiplier
+                logger.warning(
+                    f"[{instrument}] ⚠️ Используем fallback расчет ГО с запасом {safety_multiplier*100:.0f}%: "
+                    f"{margin_per_lot:.2f} ₽/лот (исходное: {original_margin:.2f} ₽)"
+                )
             
             if margin_per_lot <= 0:
                 logger.error(f"[{instrument}] ❌ Invalid margin calculation: price={current_price}, lot_size={lot_size}")
@@ -1038,17 +1078,29 @@ class TradingLoop:
             
             # Apply safety margin: use only 85% of available margin to account for exchange requirements
             # Exchange may require more margin than calculated due to volatility, fees, variation margin, etc.
-            # If we already used blocked_margin from API (reliable source), we can be less conservative
-            # because real_available already accounts for all frozen margin
+            # ВАЖНО: Биржа может требовать больше маржи, чем рассчитывается, особенно при наличии открытых позиций
+            # Поэтому используем более консервативный подход
             if total_blocked_margin > 0:
-                # Already used 80% of real_available, apply smaller safety factor (90%)
-                # Total: 0.80 * 0.90 = 0.72 (72% of real available)
-                safety_factor = 0.90
+                # Уже использовали 80% от real_available, применяем дополнительный коэффициент безопасности (75%)
+                # Это необходимо, т.к. биржа может требовать больше маржи из-за вариационной маржи и других факторов
+                # Total: 0.80 * 0.75 = 0.60 (60% of real available) - более консервативно
+                safety_factor = 0.75
             else:
-                # Using API availableBalance (less reliable), be more conservative (70%)
-                # Total: 0.50 * 0.70 = 0.35 (35% of API available)
-                safety_factor = 0.70
+                # Используем API availableBalance (менее надежный источник), будем еще более консервативными (60%)
+                # Total: 0.50 * 0.60 = 0.30 (30% of API available)
+                safety_factor = 0.60
             available_margin = available_margin * safety_factor
+            
+            # ДОПОЛНИТЕЛЬНАЯ ПРОВЕРКА: если есть открытые позиции, уменьшаем доступную маржу еще больше
+            # Биржа может требовать больше маржи для новых позиций при наличии открытых
+            if total_blocked_margin > 0:
+                # Если уже есть замороженная маржа, биржа может быть более строгой к новым позициям
+                # Уменьшаем доступную маржу на 10% дополнительно для учета вариационной маржи
+                available_margin = available_margin * 0.90
+                logger.info(
+                    f"[{instrument}] ⚠️ Additional 10% reduction applied due to existing positions. "
+                    f"Final available margin: {available_margin:.2f} руб"
+                )
             
             # Проверка: если даже 1 лот не может быть открыт с доступным балансом,
             # возможно, биржа требует больше маржи или есть другие ограничения
@@ -1068,15 +1120,46 @@ class TradingLoop:
                 )
                 return
             
+            # ВАЖНО: Для некоторых инструментов биржа может требовать ГО + стоимость лота
+            # Проверяем, нужно ли учитывать стоимость лота при расчете доступной маржи
+            lot_value = current_price * lot_size
+            total_required_per_lot = margin_per_lot + lot_value
+            
+            # Для микро-контрактов (NRG6, NGG6) стоимость лота обычно не блокируется,
+            # но для других инструментов биржа может требовать больше
+            # Используем более консервативный подход: проверяем оба варианта
+            required_for_1_lot = margin_per_lot
+            if instrument.upper() not in ["NRG6", "NGG6"]:
+                # Для обычных инструментов проверяем, не требуется ли ГО + стоимость лота
+                # Но используем только ГО, т.к. стоимость лота обычно не блокируется для фьючерсов
+                required_for_1_lot = margin_per_lot
+            else:
+                # Для микро-контрактов используем только ГО
+                required_for_1_lot = margin_per_lot
+            
             # Проверка на минимальную маржу для 1 лота (обычная)
-            if available_margin < margin_per_lot:
+            if available_margin < required_for_1_lot:
                 logger.warning(
                     f"[{instrument}] ⚠️ Insufficient margin for position. "
                     f"Available (after safety): {available_margin:.2f} руб, "
-                    f"Required for 1 lot: {margin_per_lot:.2f} руб, "
+                    f"Required for 1 lot (ГО): {required_for_1_lot:.2f} руб, "
+                    f"ГО per lot: {margin_per_lot:.2f} руб, "
+                    f"Lot value: {lot_value:.2f} руб, "
                     f"Total balance: {total_balance:.2f} руб, "
-                    f"Margin used: {total_margin_used:.2f} руб. "
+                    f"Blocked margin: {total_blocked_margin:.2f} руб, "
+                    f"Margin used (estimated): {total_margin_used:.2f} руб. "
                     f"Increase base_order_usd (current: {fixed_margin:.2f} руб) or add funds."
+                )
+                return
+            
+            # КРИТИЧЕСКАЯ ПРОВЕРКА: margin_per_lot не должен быть 0!
+            if margin_per_lot <= 0:
+                logger.error(
+                    f"[{instrument}] ❌ CRITICAL: margin_per_lot is {margin_per_lot:.2f} руб! "
+                    f"This will cause incorrect lot calculation. "
+                    f"Price: {current_price:.2f}, Lot size: {lot_size}, "
+                    f"Balance: {balance:.2f} руб. "
+                    f"Check MARGIN_PER_LOT dictionary or API data."
                 )
                 return
             
@@ -1096,7 +1179,22 @@ class TradingLoop:
                 )
                 return
             
+            # КРИТИЧЕСКАЯ ПРОВЕРКА: ограничиваем максимальное количество лотов разумным значением
+            # Максимум 10000 лотов для безопасности (предотвращает ошибки API из-за слишком больших ордеров)
+            MAX_REASONABLE_LOTS = 10000
+            if lots > MAX_REASONABLE_LOTS:
+                logger.error(
+                    f"[{instrument}] ❌ CRITICAL: Calculated lots ({lots}) exceeds maximum reasonable value ({MAX_REASONABLE_LOTS}). "
+                    f"This indicates a calculation error. "
+                    f"Available margin: {available_margin:.2f} руб, "
+                    f"Margin per lot: {margin_per_lot:.2f} руб. "
+                    f"Order will NOT be placed. Check margin calculation."
+                )
+                return
+            
             # Calculate required margin for the order
+            # ВАЖНО: Для N лотов ГО = initial_margin_on_buy/sell × N (простое умножение)
+            # Это готовые значения биржи для 1 лота, умноженные на количество
             required_margin = margin_per_lot * lots
             
             logger.info(
@@ -1378,29 +1476,29 @@ class TradingLoop:
             should_close = False
             exit_reason = None
             
-                if local_pos.side == "Buy":
-                    # LONG position
+            if local_pos.side == "Buy":
+                # LONG position
                 # TP: check if high price reached take profit
                 if local_pos.take_profit and high_price >= local_pos.take_profit:
-                        should_close = True
-                        exit_reason = "TP"
+                    should_close = True
+                    exit_reason = "TP"
                     logger.info(f"[{ticker}] ✅ TP hit: {high_price:.2f} >= {local_pos.take_profit:.2f}")
                 # SL: check if low price reached stop loss
                 elif local_pos.stop_loss and low_price <= local_pos.stop_loss:
-                        should_close = True
-                        exit_reason = "SL"
+                    should_close = True
+                    exit_reason = "SL"
                     logger.info(f"[{ticker}] ❌ SL hit: {low_price:.2f} <= {local_pos.stop_loss:.2f}")
-                else:
-                    # SHORT position
+            else:
+                # SHORT position
                 # TP: check if low price reached take profit
                 if local_pos.take_profit and low_price <= local_pos.take_profit:
-                        should_close = True
-                        exit_reason = "TP"
+                    should_close = True
+                    exit_reason = "TP"
                     logger.info(f"[{ticker}] ✅ TP hit: {low_price:.2f} <= {local_pos.take_profit:.2f}")
                 # SL: check if high price reached stop loss
                 elif local_pos.stop_loss and high_price >= local_pos.stop_loss:
-                        should_close = True
-                        exit_reason = "SL"
+                    should_close = True
+                    exit_reason = "SL"
                     logger.info(f"[{ticker}] ❌ SL hit: {high_price:.2f} >= {local_pos.stop_loss:.2f}")
             
             # Auto-set TP/SL if missing

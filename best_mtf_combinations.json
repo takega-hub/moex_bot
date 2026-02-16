@@ -1,0 +1,62 @@
+{
+  "GAZPF": {
+    "model_1h": {
+      "filename": "quad_ensemble_GAZPF_60_1h.pkl",
+      "name": "quad_ensemble_GAZPF_60_1h",
+      "path": "C:\\Users\\takeg\\OneDrive\\Документы\\vibecodding\\moex_bot\\ml_models\\quad_ensemble_GAZPF_60_1h.pkl"
+    },
+    "model_15m": {
+      "filename": "rf_GAZPF_15_mtf_15min.pkl",
+      "name": "rf_GAZPF_15_mtf_15min",
+      "path": "C:\\Users\\takeg\\OneDrive\\Документы\\vibecodding\\moex_bot\\ml_models\\rf_GAZPF_15_mtf_15min.pkl"
+    }
+  },
+  "S1H6": {
+    "model_1h": {
+      "filename": "ensemble_S1H6_60_1h.pkl",
+      "name": "ensemble_S1H6_60_1h",
+      "path": "C:\\Users\\takeg\\OneDrive\\Документы\\vibecodding\\moex_bot\\ml_models\\ensemble_S1H6_60_1h.pkl"
+    },
+    "model_15m": {
+      "filename": "quad_ensemble_S1H6_15_mtf_15min.pkl",
+      "name": "quad_ensemble_S1H6_15_mtf_15min",
+      "path": "C:\\Users\\takeg\\OneDrive\\Документы\\vibecodding\\moex_bot\\ml_models\\quad_ensemble_S1H6_15_mtf_15min.pkl"
+    }
+  },
+  "IMOEXF": {
+    "model_1h": {
+      "filename": "rf_IMOEXF_60_1h.pkl",
+      "name": "rf_IMOEXF_60_1h",
+      "path": "C:\\Users\\takeg\\OneDrive\\Документы\\vibecodding\\moex_bot\\ml_models\\rf_IMOEXF_60_1h.pkl"
+    },
+    "model_15m": {
+      "filename": "rf_IMOEXF_15_mtf_15min.pkl",
+      "name": "rf_IMOEXF_15_mtf_15min",
+      "path": "C:\\Users\\takeg\\OneDrive\\Документы\\vibecodding\\moex_bot\\ml_models\\rf_IMOEXF_15_mtf_15min.pkl"
+    }
+  },
+  "NRG6": {
+    "model_1h": {
+      "filename": "ensemble_NRG6_60_1h.pkl",
+      "name": "ensemble_NRG6_60_1h",
+      "path": "C:\\Users\\takeg\\OneDrive\\Документы\\vibecodding\\moex_bot\\ml_models\\ensemble_NRG6_60_1h.pkl"
+    },
+    "model_15m": {
+      "filename": "triple_ensemble_NRG6_15_mtf_15min.pkl",
+      "name": "triple_ensemble_NRG6_15_mtf_15min",
+      "path": "C:\\Users\\takeg\\OneDrive\\Документы\\vibecodding\\moex_bot\\ml_models\\triple_ensemble_NRG6_15_mtf_15min.pkl"
+    }
+  },
+  "RLH6": {
+    "model_1h": {
+      "filename": "xgb_RLH6_60_1h.pkl",
+      "name": "xgb_RLH6_60_1h",
+      "path": "C:\\Users\\takeg\\OneDrive\\Документы\\vibecodding\\moex_bot\\ml_models\\xgb_RLH6_60_1h.pkl"
+    },
+    "model_15m": {
+      "filename": "rf_RLH6_15_mtf_15min.pkl",
+      "name": "rf_RLH6_15_mtf_15min",
+      "path": "C:\\Users\\takeg\\OneDrive\\Документы\\vibecodding\\moex_bot\\ml_models\\rf_RLH6_15_mtf_15min.pkl"
+    }
+  }
+}

@@ -428,9 +428,10 @@ class TinkoffClient:
                         
                         # Для валютной позиции (RUB000UTSTOM) blocked_lots содержит общую замороженную маржу
                         if position.figi == "RUB000UTSTOM":
-                            logger.info(f"🔍 Found currency position RUB000UTSTOM, checking margin-related fields...")
+                            # Currency position - логируем только на debug уровне
+                            logger.debug(f"🔍 Found currency position RUB000UTSTOM, checking margin-related fields...")
                             
-                            # Логируем все поля, связанные с маржой
+                            # Логируем все поля, связанные с маржой (только на debug уровне)
                             margin_fields = {}
                             for attr_name in ['blocked_lots', 'blocked', 'initial_margin', 'current_margin', 'quantity']:
                                 if hasattr(position, attr_name):
@@ -447,7 +448,7 @@ class TinkoffClient:
                                         except (ValueError, TypeError):
                                             pass
                             
-                            logger.info(f"📊 Currency position margin fields: {margin_fields}")
+                            logger.debug(f"📊 Currency position margin fields: {margin_fields}")
                             
                             if hasattr(position, 'blocked_lots'):
                                 try:
@@ -459,7 +460,7 @@ class TinkoffClient:
                                         if total_blocked_margin > 0:
                                             logger.info(f"✅ Found total blocked margin in currency position: {total_blocked_margin:.2f} руб")
                                         else:
-                                            logger.warning(f"⚠️ blocked_lots is 0.00 руб - this may indicate no frozen margin OR API issue")
+                                            logger.debug(f"⚠️ blocked_lots is 0.00 руб - this may indicate no frozen margin OR API issue")
                                     else:
                                         logger.warning(f"⚠️ blocked_lots exists but doesn't have units/nano attributes. Type: {type(blocked_lots)}")
                                 except (AttributeError, TypeError) as e:
@@ -776,7 +777,7 @@ class TinkoffClient:
                             margin_related_fields[attr_name] = {'error': str(e)}
                 
                 if margin_related_fields:
-                    logger.info(f"📊 Instrument {figi} margin-related fields: {margin_related_fields}")
+                    logger.debug(f"📊 Instrument {figi} margin-related fields: {list(margin_related_fields.keys())}")
                     info['margin_fields'] = margin_related_fields
                 
                 return info
@@ -816,6 +817,117 @@ class TinkoffClient:
         except Exception as e:
             logger.warning(f"Error getting price step for {figi}: {e}")
             return 0.01
+    
+    def get_futures_margin(self, figi: str) -> Optional[Dict[str, Any]]:
+        """
+        Получить информацию о марже для фьючерса через get_futures_margin API.
+        
+        Этот метод возвращает актуальные данные о марже, включая:
+        - min_price_increment_amount (стоимость пункта)
+        - initial_margin (начальная маржа)
+        - другие параметры маржи
+        
+        Args:
+            figi: FIGI инструмента
+            
+        Returns:
+            Dict с данными о марже или None при ошибке
+        """
+        try:
+            logger.debug(f"[get_futures_margin] Getting margin info for {figi}")
+            with self._get_client() as client:
+                try:
+                    margin_response = client.instruments.get_futures_margin(figi=figi)
+                    
+                    def quotation_to_float(quotation) -> Optional[float]:
+                        """Преобразование Quotation в float"""
+                        if quotation is None:
+                            return None
+                        if hasattr(quotation, 'units') and hasattr(quotation, 'nano'):
+                            return float(quotation.units) + float(quotation.nano) / 1_000_000_000
+                        try:
+                            return float(quotation)
+                        except:
+                            return None
+                    
+                    margin_info = {}
+                    
+                    # ВАЖНО: Используем initial_margin_on_buy/sell напрямую - это готовые значения ГО для 1 лота
+                    # Эти значения обновляются биржей каждый день после клиринга
+                    # Пробуем прямой доступ к полям ответа
+                    for attr_name in ['initial_margin_on_buy', 'initial_margin_on_sell']:
+                        if hasattr(margin_response, attr_name):
+                            value = getattr(margin_response, attr_name)
+                            float_value = quotation_to_float(value)
+                            if float_value is not None and float_value > 0:
+                                margin_info[attr_name] = float_value
+                                logger.info(f"[get_futures_margin] {figi} {attr_name}: {float_value:.2f} ₽ (ГО для {'LONG' if 'buy' in attr_name else 'SHORT'})")
+                    
+                    # Если не получилось через прямой доступ, пробуем через initial_margin_response
+                    if 'initial_margin_on_buy' not in margin_info or 'initial_margin_on_sell' not in margin_info:
+                        if hasattr(margin_response, 'initial_margin_response'):
+                            initial_margin = margin_response.initial_margin_response
+                            
+                            # Пробуем получить initial_margin_on_buy/sell из вложенного объекта
+                            for attr_name in ['initial_margin_on_buy', 'initial_margin_on_sell']:
+                                if hasattr(initial_margin, attr_name) and attr_name not in margin_info:
+                                    value = getattr(initial_margin, attr_name)
+                                    float_value = quotation_to_float(value)
+                                    if float_value is not None and float_value > 0:
+                                        margin_info[attr_name] = float_value
+                                        logger.info(f"[get_futures_margin] {figi} {attr_name} (из initial_margin_response): {float_value:.2f} ₽")
+                    
+                    # Извлекаем min_price_increment_amount (стоимость пункта) для справки
+                    if hasattr(margin_response, 'min_price_increment_amount'):
+                        point_value = quotation_to_float(margin_response.min_price_increment_amount)
+                        if point_value is not None:
+                            margin_info['min_price_increment_amount'] = point_value
+                            logger.debug(f"[get_futures_margin] {figi} min_price_increment_amount: {point_value:.6f} ₽")
+                    
+                    # Пробуем получить initial_margin_response (старый формат, если есть)
+                    if hasattr(margin_response, 'initial_margin_response'):
+                        initial_margin = margin_response.initial_margin_response
+                        
+                        # Извлекаем min_price_increment_amount (стоимость пункта)
+                        if hasattr(initial_margin, 'min_price_increment_amount'):
+                            point_value = quotation_to_float(initial_margin.min_price_increment_amount)
+                            if point_value is not None and 'min_price_increment_amount' not in margin_info:
+                                margin_info['min_price_increment_amount'] = point_value
+                                logger.debug(f"[get_futures_margin] {figi} min_price_increment_amount: {point_value:.6f} ₽")
+                        
+                        # Извлекаем initial_margin (начальная маржа) - fallback
+                        if hasattr(initial_margin, 'initial_margin') and 'initial_margin_on_buy' not in margin_info:
+                            initial_margin_value = quotation_to_float(initial_margin.initial_margin)
+                            if initial_margin_value is not None:
+                                margin_info['initial_margin'] = initial_margin_value
+                                logger.debug(f"[get_futures_margin] {figi} initial_margin: {initial_margin_value:.2f} ₽")
+                    
+                    # Пробуем прямой доступ к полям ответа (fallback)
+                    for attr_name in ['min_price_increment_amount', 'initial_margin', 'margin']:
+                        if hasattr(margin_response, attr_name) and attr_name not in margin_info:
+                            value = getattr(margin_response, attr_name)
+                            if hasattr(value, 'units') and hasattr(value, 'nano'):
+                                float_value = quotation_to_float(value)
+                                if float_value is not None:
+                                    margin_info[attr_name] = float_value
+                                    logger.debug(f"[get_futures_margin] {figi} {attr_name}: {float_value:.6f} ₽")
+                    
+                    if margin_info:
+                        logger.info(f"[get_futures_margin] {figi} ✅ Получена информация о марже: {margin_info}")
+                        return margin_info
+                    else:
+                        logger.warning(f"[get_futures_margin] {figi} ⚠️ Не удалось извлечь данные о марже из ответа")
+                        return None
+                        
+                except AttributeError as e:
+                    logger.warning(f"[get_futures_margin] {figi} ⚠️ Метод get_futures_margin недоступен или вернул неожиданный формат: {e}")
+                    return None
+                except Exception as e:
+                    logger.error(f"[get_futures_margin] {figi} ❌ Ошибка при получении маржи: {e}", exc_info=True)
+                    return None
+        except Exception as e:
+            logger.error(f"[get_futures_margin] {figi} ❌ Ошибка при создании клиента: {e}")
+            return None
     
     def round_price(self, price: float, figi: str) -> float:
         """Round price to minimum increment."""
