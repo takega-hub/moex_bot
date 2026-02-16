@@ -1090,7 +1090,7 @@ class TradingLoop:
                     
                     # Увеличиваем запас маржи еще на 100% для следующей попытки
                     # Для микро-контрактов используем еще больший запас
-                    if instrument.upper() == "NRG6":
+                    if instrument.upper() in ["NRG6", "NGG6"]:
                         margin_multiplier = 3.0  # Увеличиваем в 3 раза для микро-контрактов
                     else:
                         margin_multiplier = 2.0  # Увеличиваем в 2 раза для остальных
