@@ -1201,6 +1201,20 @@ class TradingLoop:
                             f"⚠️ CRITICAL: If blocked_margin is 0.00, this may indicate API issue with blocked_lots extraction."
                         )
                         
+                        # Для микро-контрактов (NGG6, NRG6), если даже 1 лот не проходит несколько раз подряд,
+                        # устанавливаем коулдаун, чтобы не тратить время на повторные попытки
+                        if instrument.upper() in ["NGG6", "NRG6"]:
+                            logger.warning(
+                                f"[{instrument}] ⚠️ Setting cooldown for micro contract due to margin issues. "
+                                f"This instrument will be skipped for 2 hours to avoid repeated failures."
+                            )
+                            await asyncio.to_thread(
+                                self.state.set_cooldown,
+                                instrument,
+                                consecutive_losses=1,
+                                reason=f"margin_error_even_1_lot_failed_balance_{total_balance:.0f}"
+                            )
+                        
                         # Для микро-контрактов, если даже 1 лот не проходит несколько раз подряд,
                         # возможно стоит временно отключить инструмент
                         # Но пока просто логируем - пользователь может решить вручную
