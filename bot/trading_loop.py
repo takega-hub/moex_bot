@@ -1891,46 +1891,66 @@ class TradingLoop:
                     await asyncio.sleep(300)  # Wait 5 minutes if no instruments
                     continue
                 
-                logger.info(f"📊 Data Collection Cycle: Processing {len(active_instruments)} instruments...")
+                logger.info(f"📊 Data Collection Cycle: Processing {len(active_instruments)} instruments: {active_instruments}")
                 
-                for instrument in active_instruments:
+                for idx, instrument in enumerate(active_instruments, 1):
+                    logger.info(f"[{instrument}] ({idx}/{len(active_instruments)}) Starting data collection...")
                     try:
+                        logger.debug(f"[{instrument}] Starting data collection check...")
+                        
                         # Check if we need to collect data for this instrument
                         last_collection = self.last_data_collection.get(instrument)
                         if last_collection and (datetime.now() - last_collection) < self.data_collection_interval:
+                            logger.debug(f"[{instrument}] Skipping - collected recently at {last_collection}")
                             continue  # Skip if collected recently
                         
                         # Get instrument info
-                        instrument_info = await asyncio.to_thread(
-                            self.storage.get_instrument_by_ticker, instrument
-                        )
+                        logger.debug(f"[{instrument}] Getting instrument info...")
+                        try:
+                            instrument_info = await asyncio.wait_for(
+                                asyncio.to_thread(
+                                    self.storage.get_instrument_by_ticker, instrument
+                                ),
+                                timeout=10.0  # 10 секунд для получения информации об инструменте
+                            )
+                        except asyncio.TimeoutError:
+                            logger.error(f"[{instrument}] Timeout getting instrument info (10s exceeded)")
+                            continue
+                        except Exception as e:
+                            logger.error(f"[{instrument}] Error getting instrument info: {e}", exc_info=True)
+                            continue
                         
                         if not instrument_info:
+                            logger.warning(f"[{instrument}] Instrument info not found")
                             continue
                         
                         figi = instrument_info.get("figi") if isinstance(instrument_info, dict) else getattr(instrument_info, "figi", None)
                         if not figi:
+                            logger.warning(f"[{instrument}] FIGI not found in instrument info")
                             continue
                         
+                        logger.debug(f"[{instrument}] FIGI: {figi}, updating candles...")
+                        
                         # Update candles (с таймаутом 60 секунд)
-                        logger.debug(f"[{instrument}] Updating candles...")
                         try:
                             new_candles = await asyncio.wait_for(
                                 asyncio.to_thread(
-                            self.data_collector.update_candles,
-                            figi=figi,
-                            interval=self.settings.timeframe,
-                            days_back=1
+                                    self.data_collector.update_candles,
+                                    figi=figi,
+                                    interval=self.settings.timeframe,
+                                    days_back=1
                                 ),
                                 timeout=60.0  # 60 секунд для сбора данных
-                        )
-                        
-                        if new_candles > 0:
-                            logger.info(f"[{instrument}] ✅ Collected {new_candles} new candles")
+                            )
+                            
+                            if new_candles > 0:
+                                logger.info(f"[{instrument}] ✅ Collected {new_candles} new candles")
+                            else:
+                                logger.debug(f"[{instrument}] No new candles collected")
                         except asyncio.TimeoutError:
-                            logger.error(f"[{instrument}] Timeout updating candles (60s exceeded)")
+                            logger.error(f"[{instrument}] ⏱️ Timeout updating candles (60s exceeded) - skipping this instrument")
                         except Exception as e:
-                            logger.error(f"[{instrument}] Error updating candles: {e}", exc_info=True)
+                            logger.error(f"[{instrument}] ❌ Error updating candles: {e}", exc_info=True)
                         
                         self.last_data_collection[instrument] = datetime.now()
                         
@@ -1938,7 +1958,7 @@ class TradingLoop:
                         await asyncio.sleep(1)
                         
                     except Exception as e:
-                        logger.error(f"[{instrument}] Error in data collection: {e}", exc_info=True)
+                        logger.error(f"[{instrument}] ❌ Error in data collection loop: {e}", exc_info=True)
                         continue
                 
                 # Wait before next cycle
