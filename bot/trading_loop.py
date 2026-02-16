@@ -1206,7 +1206,7 @@ class TradingLoop:
                         if instrument.upper() in ["NGG6", "NRG6"]:
                             logger.warning(
                                 f"[{instrument}] ⚠️ Setting cooldown for micro contract due to margin issues. "
-                                f"This instrument will be skipped for 2 hours to avoid repeated failures."
+                                f"This instrument will be skipped for 30 minutes to avoid repeated failures."
                             )
                             await asyncio.to_thread(
                                 self.state.set_cooldown,

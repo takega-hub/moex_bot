@@ -405,7 +405,27 @@ class TinkoffClient:
                         
                         # Для валютной позиции (RUB000UTSTOM) blocked_lots содержит общую замороженную маржу
                         if position.figi == "RUB000UTSTOM":
-                            logger.debug(f"Found currency position RUB000UTSTOM, checking blocked_lots...")
+                            logger.info(f"🔍 Found currency position RUB000UTSTOM, checking margin-related fields...")
+                            
+                            # Логируем все поля, связанные с маржой
+                            margin_fields = {}
+                            for attr_name in ['blocked_lots', 'blocked', 'initial_margin', 'current_margin', 'quantity']:
+                                if hasattr(position, attr_name):
+                                    attr_value = getattr(position, attr_name)
+                                    margin_fields[attr_name] = {
+                                        'type': type(attr_value).__name__,
+                                        'value': str(attr_value)[:100] if attr_value is not None else 'None'
+                                    }
+                                    # Если это MoneyValue объект, извлекаем значение
+                                    if attr_value is not None and hasattr(attr_value, 'units') and hasattr(attr_value, 'nano'):
+                                        try:
+                                            value = float(attr_value.units) + float(attr_value.nano) / 1e9
+                                            margin_fields[attr_name]['extracted_value'] = value
+                                        except (ValueError, TypeError):
+                                            pass
+                            
+                            logger.info(f"📊 Currency position margin fields: {margin_fields}")
+                            
                             if hasattr(position, 'blocked_lots'):
                                 try:
                                     blocked_lots = position.blocked_lots
@@ -413,13 +433,16 @@ class TinkoffClient:
                                     if hasattr(blocked_lots, 'units') and hasattr(blocked_lots, 'nano'):
                                         total_blocked_margin = float(blocked_lots.units) + float(blocked_lots.nano) / 1e9
                                         pos_data["blocked_margin"] = total_blocked_margin
-                                        logger.info(f"✅ Found total blocked margin in currency position: {total_blocked_margin:.2f} руб")
+                                        if total_blocked_margin > 0:
+                                            logger.info(f"✅ Found total blocked margin in currency position: {total_blocked_margin:.2f} руб")
+                                        else:
+                                            logger.warning(f"⚠️ blocked_lots is 0.00 руб - this may indicate no frozen margin OR API issue")
                                     else:
                                         logger.warning(f"⚠️ blocked_lots exists but doesn't have units/nano attributes. Type: {type(blocked_lots)}")
                                 except (AttributeError, TypeError) as e:
                                     logger.warning(f"Error parsing blocked_lots for currency: {e}, type: {type(position.blocked_lots) if hasattr(position, 'blocked_lots') else 'N/A'}")
                             else:
-                                logger.debug(f"Currency position RUB000UTSTOM found but no blocked_lots attribute. Available attributes: {[attr for attr in dir(position) if not attr.startswith('_')]}")
+                                logger.warning(f"Currency position RUB000UTSTOM found but no blocked_lots attribute. Available attributes: {[attr for attr in dir(position) if not attr.startswith('_')]}")
                         
                         # Добавляем информацию о гарантийном обеспечении (марже), если доступна
                         # Для фьючерсов это важная информация для понимания распределения депозита
