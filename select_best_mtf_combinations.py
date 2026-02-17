@@ -154,7 +154,7 @@ def save_recommendations_to_json(results: Dict[str, Dict], output_path: str):
 
 def main():
     """Основная функция."""
-    csv_path = "ml_models_comparison_20260216_233323.csv"
+    csv_path = "ml_models_comparison_20260217_021127.csv"
     
     if not Path(csv_path).exists():
         print(f"❌ Файл {csv_path} не найден!")

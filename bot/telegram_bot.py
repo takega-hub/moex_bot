@@ -639,7 +639,7 @@ class TelegramBot:
                             "price": current_price
                         })
                         # ВАЖНО: min_margin_total теперь содержит только ГО (без стоимости лота)
-                        min_margin_total = max(min_margin_total, margin)
+                        min_margin_total = max(min_margin_total, margin_for_1_lot)
                 
                 # Сортируем по ГО от большего к меньшему
                 instrument_margins.sort(key=lambda x: x["margin"], reverse=True)

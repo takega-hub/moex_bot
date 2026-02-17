@@ -1,0 +1,154 @@
+{
+  "GAZPF": {
+    "model_1h": {
+      "filename": "triple_ensemble_GAZPF_60_1h.pkl",
+      "name": "triple_ensemble_GAZPF_60_1h",
+      "type": "Normal",
+      "recommendation": "Normal",
+      "score": 0.0,
+      "pnl_pct": 10.86,
+      "sharpe": 22.22,
+      "win_rate": 83.33,
+      "profit_factor": 15.80,
+      "reason": "Лучшая 1h модель: triple_ensemble (WR=83.3%, Sharpe=22.22, PnL=10.86%). Нет MTF моделей для 1h."
+    },
+    "model_15m": {
+      "filename": "rf_GAZPF_15_mtf_15min.pkl",
+      "name": "rf_GAZPF_15_mtf_15min",
+      "type": "MTF",
+      "recommendation": "MTF",
+      "score": 0.0,
+      "pnl_pct": 6.52,
+      "sharpe": 4.52,
+      "win_rate": 50.0,
+      "profit_factor": 1.84,
+      "reason": "MTF модель лучше: rf_GAZPF_15_mtf_15min (PnL=6.52%, Sharpe=4.52) vs лучшая Normal: xgb_GAZPF_15_15min (PnL=5.85%, Sharpe=3.44). MTF показывает лучшие результаты."
+    }
+  },
+  "IMOEXF": {
+    "model_1h": {
+      "filename": "quad_ensemble_IMOEXF_60_1h.pkl",
+      "name": "quad_ensemble_IMOEXF_60_1h",
+      "type": "Normal",
+      "recommendation": "Normal",
+      "score": 0.0,
+      "pnl_pct": 3.22,
+      "sharpe": 9.10,
+      "win_rate": 77.78,
+      "profit_factor": 3.52,
+      "reason": "Лучшая 1h модель: quad_ensemble (WR=77.8%, Sharpe=9.10, PnL=3.22%). Нет MTF моделей для 1h."
+    },
+    "model_15m": {
+      "filename": "quad_ensemble_IMOEXF_15_15min.pkl",
+      "name": "quad_ensemble_IMOEXF_15_15min",
+      "type": "Normal",
+      "recommendation": "Normal",
+      "score": 0.0,
+      "pnl_pct": 5.46,
+      "sharpe": 7.43,
+      "win_rate": 66.67,
+      "profit_factor": 2.83,
+      "reason": "Normal модель лучше: quad_ensemble_IMOEXF_15_15min (PnL=5.46%, Sharpe=7.43) vs лучшая MTF: rf_IMOEXF_15_mtf_15min (PnL=3.75%, Sharpe=4.51). Normal показывает значительно лучшие результаты."
+    }
+  },
+  "RLH6": {
+    "model_1h": {
+      "filename": "rf_RLH6_60_1h.pkl",
+      "name": "rf_RLH6_60_1h",
+      "type": "Normal",
+      "recommendation": "Normal",
+      "score": 0.0,
+      "pnl_pct": 5.58,
+      "sharpe": 4.31,
+      "win_rate": 45.45,
+      "profit_factor": 1.81,
+      "reason": "Лучшая 1h модель: rf_RLH6_60_1h (PnL=5.58%, Sharpe=4.31). Нет MTF моделей для 1h."
+    },
+    "model_15m": {
+      "filename": "triple_ensemble_RLH6_15_15min.pkl",
+      "name": "triple_ensemble_RLH6_15_15min",
+      "type": "Normal",
+      "recommendation": "Normal",
+      "score": 0.0,
+      "pnl_pct": 29.69,
+      "sharpe": 6.93,
+      "win_rate": 57.33,
+      "profit_factor": 2.66,
+      "reason": "Normal модель лучше: triple_ensemble_RLH6_15_15min (PnL=29.69%, Sharpe=6.93, WR=57.3%) vs лучшая MTF: rf_RLH6_15_mtf_15min (PnL=24.73%, Sharpe=5.76, WR=54.8%). Normal значительно превосходит MTF."
+    }
+  },
+  "S1H6": {
+    "model_1h": {
+      "filename": "rf_S1H6_60_1h.pkl",
+      "name": "rf_S1H6_60_1h",
+      "type": "Normal",
+      "recommendation": "Normal",
+      "score": 0.0,
+      "pnl_pct": 31.05,
+      "sharpe": 5.14,
+      "win_rate": 52.63,
+      "profit_factor": 2.23,
+      "reason": "Лучшая 1h модель: rf_S1H6_60_1h (PnL=31.05%, Sharpe=5.14). Нет MTF моделей для 1h."
+    },
+    "model_15m": {
+      "filename": "quad_ensemble_S1H6_15_mtf_15min.pkl",
+      "name": "quad_ensemble_S1H6_15_mtf_15min",
+      "type": "MTF",
+      "recommendation": "MTF",
+      "score": 0.0,
+      "pnl_pct": 139.53,
+      "sharpe": 6.73,
+      "win_rate": 62.26,
+      "profit_factor": 3.00,
+      "reason": "MTF модель лучше: quad_ensemble_S1H6_15_mtf_15min (PnL=139.53%, Sharpe=6.73, WR=62.3%) vs лучшая Normal: triple_ensemble_S1H6_15_15min (PnL=139.98%, Sharpe=6.51, WR=60.4%). MTF имеет лучший Sharpe и Win Rate, хотя PnL почти одинаковый."
+    }
+  },
+  "NRG6": {
+    "model_1h": {
+      "filename": "xgb_NRG6_60_1h.pkl",
+      "name": "xgb_NRG6_60_1h",
+      "type": "Normal",
+      "recommendation": "Normal",
+      "score": 0.0,
+      "pnl_pct": 13.22,
+      "sharpe": 2.35,
+      "win_rate": 50.0,
+      "profit_factor": 1.46,
+      "reason": "Лучшая 1h модель: xgb_NRG6_60_1h (PnL=13.22%, Sharpe=2.35). Нет MTF моделей для 1h."
+    },
+    "model_15m": {
+      "filename": "rf_NRG6_15_15min.pkl",
+      "name": "rf_NRG6_15_15min",
+      "type": "Normal",
+      "recommendation": "Normal",
+      "score": 0.0,
+      "pnl_pct": 90.20,
+      "sharpe": 6.28,
+      "win_rate": 54.90,
+      "profit_factor": 2.48,
+      "reason": "Normal модель лучше: rf_NRG6_15_15min (PnL=90.20%, Sharpe=6.28, WR=54.9%) vs лучшая MTF: triple_ensemble_NRG6_15_mtf_15min (PnL=87.38%, Sharpe=6.00, WR=52.4%). Normal показывает лучшие результаты по всем метрикам."
+    }
+  },
+  "summary": {
+    "mtf_vs_normal_analysis": {
+      "1h_models": "Все 1h модели - Normal (MTF моделей для 1h нет в данных)",
+      "15m_models": {
+        "mtf_wins": 2,
+        "normal_wins": 3,
+        "mtf_instruments": ["GAZPF", "S1H6"],
+        "normal_instruments": ["IMOEXF", "RLH6", "NRG6"],
+        "conclusion": "MTF модели показывают лучшие результаты для GAZPF и S1H6. Normal модели лучше для IMOEXF, RLH6 и NRG6. Рекомендуется использовать MTF для S1H6 (значительно лучший Sharpe и WR) и GAZPF (лучший PnL и Sharpe)."
+      }
+    },
+    "recommendations": {
+      "use_mtf_features": "Для 15min моделей: используйте MTF для S1H6 и GAZPF, Normal для остальных инструментов.",
+      "best_combinations": {
+        "GAZPF": "triple_ensemble_GAZPF_60_1h.pkl + rf_GAZPF_15_mtf_15min.pkl",
+        "IMOEXF": "quad_ensemble_IMOEXF_60_1h.pkl + quad_ensemble_IMOEXF_15_15min.pkl",
+        "RLH6": "rf_RLH6_60_1h.pkl + triple_ensemble_RLH6_15_15min.pkl",
+        "S1H6": "rf_S1H6_60_1h.pkl + quad_ensemble_S1H6_15_mtf_15min.pkl",
+        "NRG6": "xgb_NRG6_60_1h.pkl + rf_NRG6_15_15min.pkl"
+      }
+    }
+  }
+}
