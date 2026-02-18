@@ -17,7 +17,7 @@ import os
 from pathlib import Path
 
 # Импортируем настройки для получения активных инструментов
-sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).parent.parent))
 from bot.config import load_settings
 from bot.state import BotState
 

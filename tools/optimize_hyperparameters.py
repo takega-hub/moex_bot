@@ -12,7 +12,7 @@ from typing import Dict, Any
 import json
 from datetime import datetime
 
-sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from backtest_ml_strategy import run_exact_backtest
 from bot.config import load_settings

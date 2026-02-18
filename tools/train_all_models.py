@@ -19,7 +19,7 @@ import sys
 import os
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).parent.parent))
 from bot.config import load_settings
 from bot.state import BotState
 

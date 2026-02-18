@@ -1723,6 +1723,8 @@ class TelegramBot:
         text += f"ℹ️ Используется меньшее значение\n\n"
         text += f"📉 Stop Loss: {risk.stop_loss_pct*100:.2f}%\n"
         text += f"📈 Take Profit: {risk.take_profit_pct*100:.2f}%\n\n"
+        text += f"🛑 Макс. дневной убыток: {risk.max_daily_loss_pct:.1f}%\n"
+        text += f"📉 Макс. дневная просадка: {risk.max_daily_drawdown_usd:.0f} руб\n\n"
         text += f"💸 Комиссия (per side): {risk.fee_rate*100:.4f}%\n\n"
         text += f"🔄 Трейлинг стоп: {'✅ Включен' if risk.enable_trailing_stop else '❌ Выключен'}\n"
         text += f"💎 Частичное закрытие: {'✅ Включено' if risk.enable_partial_close else '❌ Выключено'}\n"
@@ -1734,6 +1736,8 @@ class TelegramBot:
             [InlineKeyboardButton(f"💰 Сумма: {risk.base_order_usd:.2f} руб", callback_data="edit_risk_base_order_usd")],
             [InlineKeyboardButton(f"📉 SL: {risk.stop_loss_pct*100:.2f}%", callback_data="edit_risk_stop_loss_pct")],
             [InlineKeyboardButton(f"📈 TP: {risk.take_profit_pct*100:.2f}%", callback_data="edit_risk_take_profit_pct")],
+            [InlineKeyboardButton(f"🛑 Max Loss: {risk.max_daily_loss_pct:.1f}%", callback_data="edit_risk_max_daily_loss_pct")],
+            [InlineKeyboardButton(f"📉 Max DD: {risk.max_daily_drawdown_usd:.0f} руб", callback_data="edit_risk_max_daily_drawdown_usd")],
             [InlineKeyboardButton(f"💸 Комиссия: {risk.fee_rate*100:.4f}%", callback_data="edit_risk_fee_rate")],
             [InlineKeyboardButton(f"🔄 Трейлинг: {'✅' if risk.enable_trailing_stop else '❌'}", callback_data="toggle_risk_enable_trailing_stop")],
             [InlineKeyboardButton(f"💎 Частичное закрытие: {'✅' if risk.enable_partial_close else '❌'}", callback_data="toggle_risk_enable_partial_close")],
@@ -1756,6 +1760,8 @@ class TelegramBot:
             "stop_loss_pct": ("Stop Loss (в %)", "1.0", "Пример: 1.0 означает 1%"),
             "take_profit_pct": ("Take Profit (в %)", "2.5", "Пример: 2.5 означает 2.5%"),
             "fee_rate": ("Комиссия биржи (per side, в %)", "0.05", "Пример: 0.05 означает 0.05% за вход/выход"),
+            "max_daily_loss_pct": ("Макс. дневной убыток (в % от депозита)", "2.0", "Пример: 2.0 означает остановку при убытке 2% за день"),
+            "max_daily_drawdown_usd": ("Макс. дневная просадка (в руб)", "5000", "Пример: 5000 означает остановку при убытке 5000 руб за день"),
         }
         
         if setting_name not in descriptions:
@@ -1820,6 +1826,18 @@ class TelegramBot:
                 else:
                     await update.message.reply_text("❌ Значение должно быть от 1 до 1000000 руб")
                     return
+            elif setting_name == "max_daily_loss_pct":
+                if 0.1 <= value <= 20.0:
+                    risk.max_daily_loss_pct = value
+                else:
+                    await update.message.reply_text("❌ Значение должно быть от 0.1 до 20%")
+                    return
+            elif setting_name == "max_daily_drawdown_usd":
+                if 100.0 <= value <= 1000000.0:
+                    risk.max_daily_drawdown_usd = value
+                else:
+                    await update.message.reply_text("❌ Значение должно быть от 100 до 1000000 руб")
+                    return
             
             self.save_risk_settings()
             await update.message.reply_text(
@@ -1868,6 +1886,8 @@ class TelegramBot:
                 "base_order_usd": self.settings.risk.base_order_usd,
                 "stop_loss_pct": self.settings.risk.stop_loss_pct,
                 "take_profit_pct": self.settings.risk.take_profit_pct,
+                "max_daily_loss_pct": getattr(self.settings.risk, "max_daily_loss_pct", 2.0),
+                "max_daily_drawdown_usd": getattr(self.settings.risk, "max_daily_drawdown_usd", 5000.0),
                 "enable_trailing_stop": self.settings.risk.enable_trailing_stop,
                 "enable_partial_close": self.settings.risk.enable_partial_close,
                 "enable_breakeven": self.settings.risk.enable_breakeven,

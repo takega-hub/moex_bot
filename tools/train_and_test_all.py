@@ -30,7 +30,7 @@ from typing import List, Dict, Optional
 from datetime import datetime
 import pandas as pd
 
-sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).parent.parent))
 from bot.config import load_settings
 from bot.state import BotState
 
