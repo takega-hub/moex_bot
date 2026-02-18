@@ -103,6 +103,11 @@ class RiskParams:
     volatility_reduction_factor: float = 0.5
     high_volatility_atr_multiplier: float = 1.5
     
+    # Circuit Breaker (Daily Limits)
+    max_daily_loss_pct: float = 2.0      # Stop trading if daily loss > 2%
+    max_daily_drawdown_usd: float = 5000.0 # Safety net in absolute value
+    reset_daily_stats_hour: int = 10     # Hour to reset daily stats (MOEX open)
+    
     def __post_init__(self):
         """Validate risk parameters."""
         # Convert percentages if needed

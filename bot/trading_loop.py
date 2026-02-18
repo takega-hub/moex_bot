@@ -112,6 +112,46 @@ class TradingLoop:
                     await asyncio.sleep(10)
                     continue
                 
+                # --- Daily Risk Check (Circuit Breaker) ---
+                self.state.check_new_day()
+                
+                # Check balance and update stats (every 5th iteration to save API calls)
+                if iteration % 5 == 1:
+                    try:
+                        balance_info = await asyncio.to_thread(self.tinkoff.get_wallet_balance)
+                        if balance_info and balance_info.get("retCode") == 0:
+                            result = balance_info.get("result", {})
+                            list_data = result.get("list", [])
+                            if list_data:
+                                wallet_item = list_data[0]
+                                coin_list = wallet_item.get("coin", [])
+                                if coin_list:
+                                    rub_coin = next((c for c in coin_list if c.get("coin") == "RUB"), None)
+                                    if rub_coin:
+                                        total_balance = float(rub_coin.get("walletBalance", 0))
+                                        
+                                        # Update stats and check if blocked
+                                        allowed = self.state.update_daily_stats(
+                                            current_balance=total_balance,
+                                            max_loss_pct=self.settings.risk.max_daily_loss_pct,
+                                            max_drawdown_usd=self.settings.risk.max_daily_drawdown_usd
+                                        )
+                                        
+                                        if not allowed:
+                                            logger.warning(f"🛑 Trading blocked due to daily limits. Balance: {total_balance:.2f}. Waiting for next day...")
+                                            if self.tg_bot and iteration % 60 == 1: # Notify once per hour
+                                                await self.tg_bot.send_message(f"🛑 ТОРГОВЛЯ ОСТАНОВЛЕНА НА СЕГОДНЯ\nДостигнут лимит дневного убытка.\nБаланс: {total_balance:.2f}")
+                                            await asyncio.sleep(300)
+                                            continue
+                    except Exception as e:
+                        logger.error(f"Error checking daily stats: {e}")
+                
+                if self.state.is_trading_blocked:
+                    logger.info("💤 Trading is blocked for today. Sleeping...")
+                    await asyncio.sleep(60)
+                    continue
+                # ------------------------------------------
+                
                 active_count = len(self.state.active_instruments)
                 logger.info(
                     f"🔄 Processing {active_count} instruments: {self.state.active_instruments}"
@@ -1090,6 +1130,30 @@ class TradingLoop:
                 # Total: 0.50 * 0.60 = 0.30 (30% of API available)
                 safety_factor = 0.60
             available_margin = available_margin * safety_factor
+            
+            # --- Dynamic Position Sizing (Volatility Based) ---
+            if self.settings.risk.enable_dynamic_position_sizing:
+                try:
+                    # Get ATR from storage
+                    df_atr = self.storage.get_candles(figi=figi, interval=self.settings.timeframe, limit=20)
+                    if not df_atr.empty and 'atr' in df_atr.columns:
+                        current_atr = float(df_atr['atr'].iloc[-1])
+                        current_price = float(df_atr['close'].iloc[-1])
+                        
+                        if current_price > 0:
+                            atr_pct = (current_atr / current_price) * 100
+                            # Threshold: if ATR > 0.5% (for 15m), it's volatile
+                            volatility_threshold = 0.5 
+                            
+                            if atr_pct > volatility_threshold:
+                                volatility_scaling = self.settings.risk.volatility_reduction_factor
+                                available_margin = available_margin * volatility_scaling
+                                logger.info(
+                                    f"[{instrument}] 📉 High Volatility Detected (ATR: {atr_pct:.2f}%). "
+                                    f"Reducing available margin by factor {volatility_scaling} -> {available_margin:.2f}"
+                                )
+                except Exception as e:
+                    logger.warning(f"[{instrument}] Error calculating volatility scaling: {e}")
             
             # ДОПОЛНИТЕЛЬНАЯ ПРОВЕРКА: если есть открытые позиции, уменьшаем доступную маржу еще больше
             # Биржа может требовать больше маржи для новых позиций при наличии открытых

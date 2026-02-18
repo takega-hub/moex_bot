@@ -856,6 +856,8 @@ class TelegramBot:
                 await self.show_signals(query)
             elif query.data == "history_trades":
                 await self.show_trades(query)
+            elif query.data == "history_logs":
+                await self.show_logs(query)
             elif query.data == "stats":
                 await self.show_stats(query)
             elif query.data == "settings_models":
@@ -1180,6 +1182,7 @@ class TelegramBot:
         keyboard = [
             [InlineKeyboardButton("🔍 ИСТОРИЯ СИГНАЛОВ", callback_data="history_signals")],
             [InlineKeyboardButton("📈 ИСТОРИЯ СДЕЛОК", callback_data="history_trades")],
+            [InlineKeyboardButton("📜 ЛОГИ БОТА", callback_data="history_logs")],
             [InlineKeyboardButton("🔙 Назад", callback_data="status_info")],
             [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")]
         ]
@@ -1201,6 +1204,68 @@ class TelegramBot:
             [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")]
         ]
         await self.safe_edit_message(query, text, reply_markup=InlineKeyboardMarkup(keyboard))
+
+    async def show_logs(self, query):
+        """Показывает последние логи бота."""
+        try:
+            log_file = Path("logs/bot.log")
+            if not log_file.exists():
+                await self.safe_edit_message(query, "❌ Файл логов не найден.", reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔙 Назад", callback_data="history_menu")]
+                ]))
+                return
+            
+            # Читаем последние 4000 байт (примерно 40-50 строк)
+            file_size = log_file.stat().st_size
+            read_size = min(file_size, 4000)
+            
+            with open(log_file, "rb") as f:
+                if file_size > read_size:
+                    f.seek(file_size - read_size)
+                content = f.read().decode("utf-8", errors="ignore")
+            
+            # Берем последние 20 строк для чистоты
+            lines = content.splitlines()
+            # Убираем первую строку, так как она может быть обрезана
+            if len(lines) > 1 and file_size > read_size:
+                lines = lines[1:]
+            
+            last_lines = lines[-20:]
+            log_text = "\n".join(last_lines)
+            
+            if not log_text.strip():
+                log_text = "(пусто)"
+            
+            # Формируем сообщение
+            message = f"📜 ПОСЛЕДНИЕ ЛОГИ (20 строк):\n\n```\n{log_text}\n```"
+            
+            keyboard = [
+                [InlineKeyboardButton("🔄 Обновить", callback_data="history_logs")],
+                [InlineKeyboardButton("🔙 Назад", callback_data="history_menu")],
+                [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")]
+            ]
+            
+            # Используем ParseMode.MARKDOWN_V2 или HTML для красивого отображения кода
+            # Но safe_edit_message использует просто текст. 
+            # Telegram Bot API по умолчанию поддерживает Markdown в некоторых клиентах, но лучше явно указать parse_mode
+            try:
+                await query.edit_message_text(
+                    text=message, 
+                    parse_mode="Markdown", 
+                    reply_markup=InlineKeyboardMarkup(keyboard)
+                )
+            except BadRequest as e:
+                if "Message is not modified" in str(e):
+                    pass # Игнорируем, если текст не изменился
+                else:
+                    # Если ошибка Markdown, отправляем как обычный текст
+                    await self.safe_edit_message(query, message.replace("```", ""), reply_markup=InlineKeyboardMarkup(keyboard))
+            
+        except Exception as e:
+            logger.error(f"Error reading logs: {e}")
+            await self.safe_edit_message(query, f"❌ Ошибка чтения логов: {e}", reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔙 Назад", callback_data="history_menu")]
+            ]))
 
     async def show_stats(self, query):
         """Показывает статистику."""

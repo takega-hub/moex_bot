@@ -71,6 +71,12 @@ class BotState:
         # Cooldowns
         self.cooldowns: Dict[str, InstrumentCooldown] = {}
         
+        # Daily Stats (Circuit Breaker)
+        self.daily_start_balance: float = 0.0
+        self.daily_pnl: float = 0.0
+        self.last_update_date: str = datetime.now().date().isoformat()
+        self.is_trading_blocked: bool = False
+        
         # Instrument margins (calculated at startup)
         self.instrument_margins: Dict[str, float] = {}  # ticker -> margin_per_lot
         
@@ -127,6 +133,12 @@ class BotState:
                 # Load cooldowns
                 for instrument, cooldown_data in data.get("cooldowns", {}).items():
                     self.cooldowns[instrument] = InstrumentCooldown(**cooldown_data)
+                
+                # Load Daily Stats
+                self.daily_start_balance = data.get("daily_start_balance", 0.0)
+                self.daily_pnl = data.get("daily_pnl", 0.0)
+                self.last_update_date = data.get("last_update_date", datetime.now().date().isoformat())
+                self.is_trading_blocked = data.get("is_trading_blocked", False)
             
             logger.debug(f"State loaded: {len(self.active_instruments)} active instruments: {self.active_instruments}")
         except Exception as e:
@@ -147,7 +159,11 @@ class BotState:
                     "instrument_margins": self.instrument_margins,
                     "trades": [asdict(t) for t in self.trades[-500:]],
                     "signals": [asdict(s) for s in self.signals[-1000:]],
-                    "cooldowns": {instrument: asdict(cooldown) for instrument, cooldown in self.cooldowns.items()}
+                    "cooldowns": {instrument: asdict(cooldown) for instrument, cooldown in self.cooldowns.items()},
+                    "daily_start_balance": self.daily_start_balance,
+                    "daily_pnl": self.daily_pnl,
+                    "last_update_date": self.last_update_date,
+                    "is_trading_blocked": self.is_trading_blocked
                 }
                 
                 # Создаем временный файл для атомарной записи
@@ -421,3 +437,61 @@ class BotState:
             if instrument in self.cooldowns:
                 del self.cooldowns[instrument]
                 self.save()
+
+    def check_new_day(self):
+        """Check if new day started and reset stats."""
+        today = datetime.now().date().isoformat()
+        with self.lock:
+            if self.last_update_date != today:
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.info(f"[state] New day detected! Resetting daily stats. Old: {self.last_update_date}, New: {today}")
+                
+                self.daily_pnl = 0.0
+                self.daily_start_balance = 0.0  # Will be updated on first balance check
+                self.is_trading_blocked = False
+                self.last_update_date = today
+                self.save()
+
+    def update_daily_stats(self, current_balance: float, max_loss_pct: float, max_drawdown_usd: float) -> bool:
+        """
+        Update daily stats and check circuit breaker.
+        Returns True if trading is ALLOWED, False if BLOCKED.
+        """
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        with self.lock:
+            # First run of the day or reset
+            if self.daily_start_balance == 0.0:
+                self.daily_start_balance = current_balance
+                logger.info(f"[state] Daily start balance set to {self.daily_start_balance:.2f}")
+                self.save()
+                return True
+            
+            # Calculate PnL
+            self.daily_pnl = current_balance - self.daily_start_balance
+            pnl_pct = (self.daily_pnl / self.daily_start_balance) * 100 if self.daily_start_balance > 0 else 0.0
+            
+            # Check Limits
+            triggered = False
+            reason = ""
+            
+            if self.daily_pnl < 0:
+                if abs(pnl_pct) >= max_loss_pct:
+                    triggered = True
+                    reason = f"Daily loss limit reached: {pnl_pct:.2f}% >= {max_loss_pct}%"
+                elif abs(self.daily_pnl) >= max_drawdown_usd:
+                    triggered = True
+                    reason = f"Daily drawdown limit reached: {abs(self.daily_pnl):.2f} >= {max_drawdown_usd}"
+            
+            if triggered and not self.is_trading_blocked:
+                self.is_trading_blocked = True
+                logger.critical(f"🛑 CIRCUIT BREAKER TRIGGERED: {reason}. Trading stopped for today.")
+                self.save()
+                return False
+            
+            if self.is_trading_blocked:
+                return False
+                
+            return True
