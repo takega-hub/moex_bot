@@ -78,6 +78,19 @@ class DataCollector:
                     older_candles = self._collect_candles_range(figi, from_date, existing_from, interval)
                     all_candles.extend(older_candles)
                 
+                # Add existing data if we are bridging the gap or extending
+                # We need to load existing data that falls within the requested range
+                # Determine overlap range
+                overlap_start = max(from_date, existing_from)
+                overlap_end = min(to_date, existing_to)
+                
+                if overlap_start < overlap_end:
+                    logger.info(f"Loading existing data overlap: {overlap_start.date()} to {overlap_end.date()}")
+                    df_existing = self.storage.get_candles(figi, from_date=overlap_start, to_date=overlap_end, interval=interval)
+                    if not df_existing.empty:
+                        existing_candles = df_existing.to_dict('records')
+                        all_candles.extend(existing_candles)
+                
                 if need_newer:
                     logger.info(f"Collecting newer data: {existing_to.date()} to {to_date.date()}")
                     newer_candles = self._collect_candles_range(figi, existing_to, to_date, interval)

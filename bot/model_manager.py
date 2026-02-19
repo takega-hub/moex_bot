@@ -145,7 +145,8 @@ class ModelManager:
         try:
             # Вызываем скрипт обучения
             python_exe = sys.executable
-            cmd = [python_exe, "train_models.py", "--ticker", instrument]
+            script_path = "tools/train_models.py" if os.path.exists("tools/train_models.py") else "train_models.py"
+            cmd = [python_exe, script_path, "--ticker", instrument]
             
             # Добавляем параметр MTF
             if use_mtf:
@@ -166,7 +167,8 @@ class ModelManager:
             new_models.sort(key=lambda x: x.stat().st_mtime, reverse=True)
             
             # Запускаем сравнение моделей
-            compare_cmd = [python_exe, "compare_ml_models.py", "--tickers", instrument, "--days", "14", "--output", "csv"]
+            compare_script = "tools/compare_ml_models.py" if os.path.exists("tools/compare_ml_models.py") else "compare_ml_models.py"
+            compare_cmd = [python_exe, compare_script, "--tickers", instrument, "--days", "14", "--output", "csv"]
             subprocess.run(compare_cmd, capture_output=True, text=True)
             
             # Ищем последний CSV отчет сравнения

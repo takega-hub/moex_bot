@@ -7,6 +7,10 @@ import argparse
 import os
 import sys
 from pathlib import Path
+
+# Добавляем корневую директорию проекта в sys.path
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
 from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime
 from functools import partial
@@ -30,17 +34,27 @@ def find_all_tickers(models_dir: Path) -> List[str]:
         return []
     
     tickers = set()
+    ignored_keywords = {'ENSEMBLE', 'TRIPLE', 'QUAD', 'RF', 'XGB', 'CATBOOST', 'WEIGHTED', 'MTF', 'STACKING', 'HYBRID'}
     
     for model_file in models_dir.glob("*.pkl"):
         name = model_file.stem
         parts = name.split("_")
         
-        if len(parts) >= 2:
-            for part in parts[1:]:
-                part_upper = part.upper()
-                if len(part_upper) >= 3 and part_upper.isalnum():
-                    tickers.add(part_upper)
-                    break
+        for part in parts:
+            part_upper = part.upper()
+            # Пропускаем известные ключевые слова и цифры (таймфреймы)
+            if part_upper in ignored_keywords:
+                continue
+            if part_upper.isdigit() or (part_upper.endswith('MIN') and part_upper[:-3].isdigit()):
+                continue
+            if part_upper in ['1H', '4H', '1D', '15', '60']:
+                continue
+                
+            # Тикер обычно длиной от 3 символов и состоит из букв/цифр
+            if len(part_upper) >= 3 and part_upper.isalnum():
+                tickers.add(part_upper)
+                # Берем первый подходящий кандидат как тикер (обычно он идет после префиксов)
+                break
     
     return sorted(list(tickers))
 

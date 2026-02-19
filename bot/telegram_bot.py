@@ -2683,7 +2683,11 @@ class TelegramBot:
             )
             
             # Путь к скрипту обучения
-            script_path = Path("train_models.py")
+            script_path = Path("tools/train_models.py")
+            
+            if not script_path.exists():
+                # Пробуем альтернативный путь (если запущен из tools)
+                script_path = Path("train_models.py")
             
             if not script_path.exists():
                 error_msg = f"❌ Скрипт обучения не найден: {script_path}"

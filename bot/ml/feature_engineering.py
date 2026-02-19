@@ -410,6 +410,11 @@ class FeatureEngineer:
                     for touch_idx in touch_indices:
                         # Проверяем, пошла ли цена вверх после касания
                         touch_pos = df.index.get_loc(touch_idx)
+                        if isinstance(touch_pos, slice):
+                            touch_pos = touch_pos.start
+                        elif hasattr(touch_pos, "__len__"):
+                            touch_pos = touch_pos[0]
+                        
                         if touch_pos < len(df) - 1:
                             if close_clean.iloc[touch_pos + 1] > close_clean.iloc[touch_pos]:
                                 support_bounces += 1
@@ -424,6 +429,11 @@ class FeatureEngineer:
                     for touch_idx in touch_indices:
                         # Проверяем, пошла ли цена вниз после касания
                         touch_pos = df.index.get_loc(touch_idx)
+                        if isinstance(touch_pos, slice):
+                            touch_pos = touch_pos.start
+                        elif hasattr(touch_pos, "__len__"):
+                            touch_pos = touch_pos[0]
+                        
                         if touch_pos < len(df) - 1:
                             if close_clean.iloc[touch_pos + 1] < close_clean.iloc[touch_pos]:
                                 resistance_bounces += 1

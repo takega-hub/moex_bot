@@ -251,9 +251,10 @@ class MLBacktestSimulator:
             take_profit = signal.indicators_info.get('take_profit')
         
         if stop_loss is None or take_profit is None:
+            print(f"[Open] Rejected: Missing SL/TP. SL={stop_loss}, TP={take_profit}")
             return False
         
-        base_order_rub = getattr(self, '_base_order_rub', 10000.0)
+        base_order_rub = getattr(self, '_base_order_rub', 5000.0)
         
         lots, margin_required = self.calculate_position_size(
             signal.price, stop_loss, signal.action,
@@ -261,6 +262,7 @@ class MLBacktestSimulator:
         )
         
         if lots <= 0 or margin_required > self.balance:
+            print(f"[Open] Rejected: Insufficient funds. Lots={lots}, Margin={margin_required:.2f}, Bal={self.balance:.2f}")
             return False
         
         self.balance -= margin_required
@@ -295,10 +297,8 @@ class MLBacktestSimulator:
             signal_tp_pct=tp_distance_pct,
         )
         
-        if len(self.trades) < 5:
-            print(f"\n📊 Открыта позиция #{len(self.trades) + 1}:")
-            print(f"   {signal.action.value} @ {signal.price:.2f} руб")
-            print(f"   Лотов: {lots}, TP: {take_profit:.2f}, SL: {stop_loss:.2f}")
+        # Print every trade
+        print(f"[Open] #{len(self.trades) + 1} {signal.action.value} @ {signal.price:.2f} | Lots: {lots} | TP: {take_profit:.2f} | SL: {stop_loss:.2f}")
         
         return True
     
@@ -387,16 +387,13 @@ class MLBacktestSimulator:
         self.trades.append(pos)
         self.current_position = None
         
-        if len(self.trades) <= 10:
-            # Calculate price change percentage for clarity
-            if pos.action == Action.LONG:
-                price_change_pct = ((exit_price - pos.entry_price) / pos.entry_price) * 100
-            else:
-                price_change_pct = ((pos.entry_price - exit_price) / pos.entry_price) * 100
-            
-            print(f"\n📊 Закрыта позиция #{len(self.trades)}:")
-            print(f"   {pos.action.value} @ {pos.entry_price:.2f} -> {exit_price:.2f} руб")
-            print(f"   PnL: {pnl_rub:.2f} руб ({pos.pnl_pct:.2f}% от маржи, изменение цены: {price_change_pct:+.2f}%)")
+        # Calculate price change percentage for clarity
+        if pos.action == Action.LONG:
+            price_change_pct = ((exit_price - pos.entry_price) / pos.entry_price) * 100
+        else:
+            price_change_pct = ((pos.entry_price - exit_price) / pos.entry_price) * 100
+        
+        print(f"[Close] #{len(self.trades)} {pos.action.value} @ {exit_price:.2f} | PnL: {pnl_rub:.2f} RUB ({pos.pnl_pct:.2f}%)")
     
     def close_all_positions(self, final_time: datetime, final_price: float):
         """Закрывает все позиции в конце бэктеста."""

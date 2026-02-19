@@ -1,0 +1,3 @@
+model_1h,model_15m,symbol,total_trades,winning_trades,losing_trades,win_rate,total_pnl,total_pnl_pct,avg_win,avg_loss,profit_factor,max_drawdown_pct,sharpe_ratio
+ensemble_IMOEXF_60_1h.pkl,quad_ensemble_IMOEXF_15_15min.pkl,IMOEXF,7,7,0,100.0,170.7257156250007,3.414514312500014,24.389387946428535,0.0,0.0,0.0,37.57729242766756
+ensemble_IMOEXF_60_1h.pkl,ensemble_IMOEXF_15_mtf_15min.pkl,IMOEXF,7,7,0,100.0,158.18823125000017,3.1637646250000033,22.598318749999965,0.0,0.0,0.0,28.17018444415458
