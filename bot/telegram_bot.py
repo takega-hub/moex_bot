@@ -2697,7 +2697,10 @@ class TelegramBot:
             
             # Определяем параметры MTF из настроек
             use_mtf = getattr(self.settings.ml_strategy, 'mtf_enabled', False)
-            cmd_args = [sys.executable, str(script_path), "--ticker", ticker]
+            
+            # Запускаем скрипт, находясь в его директории (tools/)
+            # Поэтому используем только имя файла, а не полный путь
+            cmd_args = [sys.executable, script_path.name, "--ticker", ticker]
             
             # Добавляем параметры MTF
             if use_mtf:
@@ -2705,9 +2708,11 @@ class TelegramBot:
             else:
                 cmd_args.append("--no-mtf")
             
-            logger.info(f"[retrain_models_async] Running command: {' '.join(cmd_args)}")
+            logger.info(f"[retrain_models_async] Running command: {' '.join(cmd_args)} in cwd={script_path.parent}")
             
             # Запускаем обучение в отдельном процессе
+            # ВАЖНО: cwd=str(script_path.parent) устанавливает рабочую директорию в tools/
+            # Поэтому скрипт нужно вызывать просто по имени, а не по полному пути
             process = await asyncio.create_subprocess_exec(
                 *cmd_args,
                 stdout=asyncio.subprocess.PIPE,
