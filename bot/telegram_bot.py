@@ -1557,8 +1557,15 @@ class TelegramBot:
             else:
                 await self.app.bot.send_message(
                     chat_id=user_id,
-                    text=f"❌ Не удалось найти комбинации для {ticker}.\nВозможно, нет моделей или данных.",
-                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Меню MTF", callback_data=f"select_mtf_models_{ticker}")]])
+                    text=f"❌ Не удалось найти комбинации для {ticker}.\n\n"
+                         f"Причины:\n"
+                         f"1. Не обучены модели (нужны 1h и 15m)\n"
+                         f"2. Нет исторических данных\n\n"
+                         f"Рекомендуется обучить модели заново.",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🎓 Обучить модели", callback_data=f"retrain_{ticker}")],
+                        [InlineKeyboardButton("🔙 Меню MTF", callback_data=f"select_mtf_models_{ticker}")]
+                    ])
                 )
                 logger.warning(f"MTF optimization for {ticker} returned no results")
                 
@@ -2784,7 +2791,7 @@ class TelegramBot:
             await self.send_notification(f"❌ Ошибка при тестировании моделей: {str(e)}", user_id)
     
     async def retrain_models_async(self, ticker: str, user_id: int):
-        """Обучает все модели для конкретного инструмента"""
+        """Обучает все модели для конкретного инструмента (включая 1h и 15min)"""
         import subprocess
         from pathlib import Path
         
@@ -2793,16 +2800,14 @@ class TelegramBot:
         try:
             await self.send_notification(
                 f"🎓 Начато обучение всех моделей для {ticker}...\n"
-                "Это может занять 10-30 минут.\n"
-                "Вы будете получать уведомления о прогрессе.",
+                "Это может занять 15-40 минут.\n"
+                "Сначала обучим 1h модели, затем 15min.",
                 user_id
             )
             
-            # Путь к скрипту обучения
             script_path = Path("tools/train_models.py")
             
             if not script_path.exists():
-                # Пробуем альтернативный путь (если запущен из tools)
                 script_path = Path("train_models.py")
             
             if not script_path.exists():
@@ -2811,80 +2816,87 @@ class TelegramBot:
                 await self.send_notification(error_msg, user_id)
                 return
             
-            # Определяем параметры MTF из настроек
             use_mtf = getattr(self.settings.ml_strategy, 'mtf_enabled', False)
             
-            # Запускаем скрипт, находясь в его директории (tools/)
-            # Поэтому используем только имя файла, а не полный путь
-            cmd_args = [sys.executable, script_path.name, "--ticker", ticker]
+            intervals = ["1hour", "15min"]
+            total_trained = 0
             
-            # Добавляем параметры MTF
-            if use_mtf:
-                cmd_args.append("--mtf")
-            else:
-                cmd_args.append("--no-mtf")
+            for interval in intervals:
+                interval_display = "1h" if interval == "1hour" else "15min"
+                await self.send_notification(
+                    f"📊 Обучение моделей {interval_display} для {ticker}...",
+                    user_id
+                )
+                
+                cmd_args = [
+                    sys.executable,
+                    script_path.name,
+                    "--ticker", ticker,
+                    "--interval", interval
+                ]
+                
+                if use_mtf:
+                    cmd_args.append("--mtf")
+                else:
+                    cmd_args.append("--no-mtf")
+                
+                logger.info(f"[retrain_models_async] Running: {' '.join(cmd_args)} in cwd={script_path.parent}")
+                
+                process = await asyncio.create_subprocess_exec(
+                    *cmd_args,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    cwd=str(script_path.parent)
+                )
+                
+                logger.info(f"[retrain_models_async] {interval_display} training started for {ticker}, PID={process.pid}")
+                
+                trained_models = []
+                current_model = None
+                
+                while True:
+                    line = await process.stdout.readline()
+                    if not line:
+                        break
+                    
+                    line_text = line.decode('utf-8', errors='ignore').strip()
+                    
+                    if "Обучение:" in line_text and ticker in line_text:
+                        parts = line_text.split("Обучение:")
+                        if len(parts) > 1:
+                            model_name = parts[1].strip().split()[0] if parts[1].strip() else None
+                            if model_name:
+                                current_model = model_name
+                                await self.send_notification(f"🔄 {model_name} ({interval_display})...", user_id)
+                    
+                    if "✅" in line_text and current_model:
+                        trained_models.append(current_model)
+                        await self.send_notification(f"✅ {current_model} обучена ({interval_display})", user_id)
+                        current_model = None
+                    
+                    if "❌" in line_text and current_model:
+                        await self.send_notification(f"❌ Ошибка: {current_model} ({interval_display})", user_id)
+                        current_model = None
+                
+                await process.wait()
+                total_trained += len(trained_models)
+                
+                if process.returncode != 0:
+                    stderr = await process.stderr.read()
+                    error_msg = stderr.decode('utf-8', errors='ignore')[:300]
+                    await self.send_notification(
+                        f"⚠️ Ошибка при обучении {interval_display} для {ticker}:\n{error_msg}",
+                        user_id
+                    )
+                
+                await asyncio.sleep(2)
             
-            logger.info(f"[retrain_models_async] Running command: {' '.join(cmd_args)} in cwd={script_path.parent}")
-            
-            # Запускаем обучение в отдельном процессе
-            # ВАЖНО: cwd=str(script_path.parent) устанавливает рабочую директорию в tools/
-            # Поэтому скрипт нужно вызывать просто по имени, а не по полному пути
-            process = await asyncio.create_subprocess_exec(
-                *cmd_args,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=str(script_path.parent)
+            await self.send_notification(
+                f"✅ Обучение завершено для {ticker}!\n"
+                f"Всего обучено моделей: {total_trained}\n"
+                f"(1h + 15min)",
+                user_id
             )
-            
-            logger.info(f"[retrain_models_async] Training process started for {ticker}, PID={process.pid}")
-            
-            # Отслеживаем вывод
-            trained_models = []
-            current_model = None
-            
-            while True:
-                line = await process.stdout.readline()
-                if not line:
-                    break
-                
-                line_text = line.decode('utf-8', errors='ignore').strip()
-                
-                # Парсим вывод для уведомлений
-                if "Обучение:" in line_text and ticker in line_text:
-                    parts = line_text.split("Обучение:")
-                    if len(parts) > 1:
-                        model_name = parts[1].strip().split()[0] if parts[1].strip() else None
-                        if model_name:
-                            current_model = model_name
-                            await self.send_notification(f"🔄 Обучение модели: {model_name} для {ticker}...", user_id)
-                
-                if "✅" in line_text and current_model:
-                    trained_models.append(current_model)
-                    await self.send_notification(f"✅ {current_model} обучена для {ticker}", user_id)
-                    current_model = None
-                
-                if "❌" in line_text and current_model:
-                    await self.send_notification(f"❌ Ошибка при обучении {current_model} для {ticker}", user_id)
-                    current_model = None
-            
-            # Ждем завершения процесса
-            await process.wait()
-            
-            if process.returncode == 0:
-                await self.send_notification(
-                    f"✅ Обучение всех моделей для {ticker} завершено!\n"
-                    f"Обучено моделей: {len(trained_models)}\n\n"
-                    "Обновите список моделей для просмотра результатов.",
-                    user_id
-                )
-            else:
-                # Читаем ошибки
-                stderr = await process.stderr.read()
-                error_msg = stderr.decode('utf-8', errors='ignore')[:500]
-                await self.send_notification(
-                    f"❌ Ошибка при обучении моделей для {ticker}:\n{error_msg}",
-                    user_id
-                )
                 
         except Exception as e:
             logger.error(f"[retrain_models_async] Error retraining models for {ticker}: {e}", exc_info=True)
