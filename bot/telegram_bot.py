@@ -1852,7 +1852,12 @@ class TelegramBot:
         text += f"🔄 Трейлинг стоп: {'✅ Включен' if risk.enable_trailing_stop else '❌ Выключен'}\n"
         text += f"💎 Частичное закрытие: {'✅ Включено' if risk.enable_partial_close else '❌ Выключено'}\n"
         text += f"🛡️ Безубыток: {'✅ Включен' if risk.enable_breakeven else '❌ Выключен'}\n"
-        text += f"❄️ Cooldown после убытков: {'✅ Включен' if risk.enable_loss_cooldown else '❌ Выключен'}\n"
+        text += f"❄️ Cooldown после убытков: {'✅ Включен' if risk.enable_loss_cooldown else '❌ Выключен'}\n\n"
+        
+        text += f"☀️ РЕЖИМ ДНЕВНОЙ ТОРГОВЛИ:\n"
+        text += f"   Режим: {'✅ Включен' if risk.enable_day_trading_mode else '❌ Выключен'}\n"
+        text += f"   Торговые часы: {risk.trading_start_hour}:00 - {risk.trading_end_hour}:00 (МСК)\n"
+        text += f"   Закрывать на ночь: {'✅ Да' if risk.close_positions_on_day_end else '❌ Нет'}\n"
         
         keyboard = [
             [InlineKeyboardButton(f"💰 Маржа: {risk.margin_pct_balance*100:.0f}%", callback_data="edit_risk_margin_pct_balance")],
@@ -1866,6 +1871,8 @@ class TelegramBot:
             [InlineKeyboardButton(f"💎 Частичное закрытие: {'✅' if risk.enable_partial_close else '❌'}", callback_data="toggle_risk_enable_partial_close")],
             [InlineKeyboardButton(f"🛡️ Безубыток: {'✅' if risk.enable_breakeven else '❌'}", callback_data="toggle_risk_enable_breakeven")],
             [InlineKeyboardButton(f"❄️ Cooldown: {'✅' if risk.enable_loss_cooldown else '❌'}", callback_data="toggle_risk_enable_loss_cooldown")],
+            [InlineKeyboardButton(f"☀️ Дневная торговля: {'✅ ВКЛ' if risk.enable_day_trading_mode else '❌ ВЫКЛ'}", callback_data="toggle_risk_enable_day_trading_mode")],
+            [InlineKeyboardButton(f"🕐 Часы: {risk.trading_start_hour}:00-{risk.trading_end_hour}:00", callback_data="edit_risk_trading_hours")],
             [InlineKeyboardButton("🔄 Сбросить на стандартные", callback_data="reset_risk_defaults")],
             [InlineKeyboardButton("🔙 Назад", callback_data="main_menu")],
             [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")]
@@ -1885,6 +1892,7 @@ class TelegramBot:
             "fee_rate": ("Комиссия биржи (per side, в %)", "0.05", "Пример: 0.05 означает 0.05% за вход/выход"),
             "max_daily_loss_pct": ("Макс. дневной убыток (в % от депозита)", "2.0", "Пример: 2.0 означает остановку при убытке 2% за день"),
             "max_daily_drawdown_usd": ("Макс. дневная просадка (в руб)", "5000", "Пример: 5000 означает остановку при убытке 5000 руб за день"),
+            "trading_hours": ("Торговые часы (МСК)", "10 23", "Введите час начала и конца через пробел. Например: 10 23"),
         }
         
         if setting_name not in descriptions:
@@ -1961,6 +1969,20 @@ class TelegramBot:
                 else:
                     await update.message.reply_text("❌ Значение должно быть от 100 до 1000000 руб")
                     return
+            elif setting_name == "trading_hours":
+                parts = text.strip().split()
+                if len(parts) == 2:
+                    start_hour = int(parts[0])
+                    end_hour = int(parts[1])
+                    if 0 <= start_hour <= 23 and 0 <= end_hour <= 23:
+                        risk.trading_start_hour = start_hour
+                        risk.trading_end_hour = end_hour
+                    else:
+                        await update.message.reply_text("❌ Часы должны быть от 0 до 23")
+                        return
+                else:
+                    await update.message.reply_text("❌ Введите два числа через пробел (начало и конец)")
+                    return
             
             self.save_risk_settings()
             await update.message.reply_text(
@@ -1985,6 +2007,8 @@ class TelegramBot:
             risk.enable_breakeven = not risk.enable_breakeven
         elif setting_name == "enable_loss_cooldown":
             risk.enable_loss_cooldown = not risk.enable_loss_cooldown
+        elif setting_name == "enable_day_trading_mode":
+            risk.enable_day_trading_mode = not risk.enable_day_trading_mode
         else:
             await query.answer("Неизвестная настройка", show_alert=True)
             return
@@ -2016,6 +2040,10 @@ class TelegramBot:
                 "enable_breakeven": self.settings.risk.enable_breakeven,
                 "enable_loss_cooldown": self.settings.risk.enable_loss_cooldown,
                 "fee_rate": self.settings.risk.fee_rate,
+                "enable_day_trading_mode": getattr(self.settings.risk, "enable_day_trading_mode", False),
+                "trading_start_hour": getattr(self.settings.risk, "trading_start_hour", 10),
+                "trading_end_hour": getattr(self.settings.risk, "trading_end_hour", 23),
+                "close_positions_on_day_end": getattr(self.settings.risk, "close_positions_on_day_end", True),
             }
             with open(config_file, 'w', encoding='utf-8') as f:
                 json.dump(risk_dict, f, indent=2, ensure_ascii=False)

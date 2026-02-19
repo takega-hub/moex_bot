@@ -150,6 +150,13 @@ class TradingLoop:
                     logger.info("💤 Trading is blocked for today. Sleeping...")
                     await asyncio.sleep(60)
                     continue
+                
+                # ------------------------------------------
+                # Проверка торгового времени для режима дневной торговли
+                if not self.is_trading_time():
+                    logger.info("🌙 Вне торгового окна. Ожидание до следующего утра...")
+                    await asyncio.sleep(300)
+                    continue
                 # ------------------------------------------
                 
                 active_count = len(self.state.active_instruments)
@@ -188,6 +195,7 @@ class TradingLoop:
         await asyncio.sleep(10)
         
         cycle_count = 0
+        last_close_check_hour = -1
         while True:
             try:
                 if not self.state.is_running:
@@ -195,6 +203,17 @@ class TradingLoop:
                     continue
                 
                 cycle_count += 1
+                
+                current_hour = datetime.now().hour
+                
+                # Проверка закрытия позиций в конце дня (в 23:00 МСК)
+                if getattr(self.settings.risk, 'enable_day_trading_mode', False):
+                    if current_hour >= 23 and last_close_check_hour != 23:
+                        logger.info("[DayTrading] 🌙 Начало ночи - закрываем все позиции")
+                        await self.close_all_positions_end_of_day()
+                        last_close_check_hour = 23
+                    elif current_hour < 10 and last_close_check_hour != -1:
+                        last_close_check_hour = -1
                 
                 # Sync positions with exchange every 10 cycles (every ~4 minutes)
                 if cycle_count % 10 == 0:
@@ -1706,6 +1725,93 @@ class TradingLoop:
                 
         except Exception as e:
             logger.error(f"[{ticker}] ❌ Error closing position: {e}", exc_info=True)
+    
+    def is_trading_time(self) -> bool:
+        """Проверяет, находимся ли мы в торговом окне (МСК)."""
+        if not getattr(self.settings.risk, 'enable_day_trading_mode', False):
+            return True
+        
+        now = datetime.now()
+        trading_start = getattr(self.settings.risk, 'trading_start_hour', 10)
+        trading_end = getattr(self.settings.risk, 'trading_end_hour', 23)
+        
+        current_hour = now.hour
+        
+        in_trading_hours = trading_start <= current_hour < trading_end
+        
+        logger.info(
+            f"[DayTrading] Текущее время: {current_hour}:00 (МСК), "
+            f"Торговое окно: {trading_start}:00 - {trading_end}:00, "
+            f"Торговля разрешена: {in_trading_hours}"
+        )
+        
+        return in_trading_hours
+    
+    async def close_all_positions_end_of_day(self):
+        """Закрывает все открытые позиции в конце торгового дня."""
+        if not getattr(self.settings.risk, 'enable_day_trading_mode', False):
+            return
+        
+        if not getattr(self.settings.risk, 'close_positions_on_day_end', True):
+            return
+        
+        logger.info("[DayTrading] 🏁 Проверка закрытия позиций в конце дня...")
+        
+        try:
+            pos_info = await asyncio.wait_for(
+                asyncio.to_thread(self.tinkoff.get_position_info),
+                timeout=30.0
+            )
+        except Exception as e:
+            logger.error(f"[DayTrading] Ошибка получения позиций: {e}")
+            return
+        
+        if not pos_info or pos_info.get("retCode") != 0:
+            logger.warning("[DayTrading] Не удалось получить позиции")
+            return
+        
+        positions = pos_info.get("result", {}).get("list", [])
+        
+        if not positions:
+            logger.info("[DayTrading] Нет открытых позиций")
+            return
+        
+        closed_count = 0
+        for position in positions:
+            figi = position.get("figi")
+            quantity = abs(float(position.get("quantity", 0)))
+            
+            if quantity == 0:
+                continue
+            
+            if figi and ("RUB" in figi or figi.startswith("RUB") or "CURRENCY" in str(figi).upper()):
+                continue
+            
+            instrument_info = self.storage.get_instrument(figi)
+            if not instrument_info:
+                continue
+            
+            ticker = instrument_info.get("ticker")
+            
+            try:
+                current_price = float(self.storage.get_candles(figi=figi, interval=self.settings.timeframe, limit=1)['close'].iloc[-1])
+            except:
+                current_price = 0
+            
+            trade = self.state.get_open_position(ticker)
+            if trade:
+                await self.close_position(figi, ticker, trade, current_price, "end_of_day")
+                closed_count += 1
+                logger.info(f"[DayTrading] ✅ Закрыта позиция {ticker}")
+                await asyncio.sleep(1)
+        
+        if closed_count > 0:
+            logger.info(f"[DayTrading] 🏁 Закрыто {closed_count} позиций в конце дня")
+            if self.tg_bot:
+                await self.tg_bot.send_message(
+                    f"🏁 ЗАКРЫТИЕ ПОЗИЦИЙ В КОНЦЕ ДНЯ\n"
+                    f"Закрыто позиций: {closed_count}"
+                )
     
     async def handle_position_closed(self, figi: str, local_pos: TradeRecord, reason: str = "external"):
         """Handle position closed externally (not by our TP/SL)."""

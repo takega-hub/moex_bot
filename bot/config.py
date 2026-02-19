@@ -48,6 +48,12 @@ class StrategyParams:
     mtf_alignment_mode: str = "strict"  # Режим выравнивания: "strict" или "weighted"
     mtf_require_alignment: bool = True  # Требовать совпадение направлений обеих моделей
     
+    # Режим дневной торговли (закрытие позиций в конце дня)
+    enable_day_trading_mode: bool = False  # Включить режим дневной торговли
+    trading_start_hour: int = 10  # Час начала торгов (МСК)
+    trading_end_hour: int = 23  # Час окончания торгов (МСК)
+    close_positions_on_day_end: bool = True  # Закрывать позиции в конце торгового дня
+    
     def __post_init__(self):
         """Validate values."""
         if not 0 <= self.confidence_threshold <= 1:
@@ -69,7 +75,7 @@ class StrategyParams:
 class RiskParams:
     """Risk management parameters."""
     max_position_usd: float = 200.0
-    base_order_usd: float = 10000.0  # Минимальная сумма для открытия позиции (в рублях)
+    base_order_usd: float = 6000.0  # Минимальная сумма для открытия позиции (в рублях)
     add_order_usd: float = 50.0
     margin_pct_balance: float = 0.20
     stop_loss_pct: float = 0.01
@@ -89,6 +95,12 @@ class RiskParams:
     breakeven_activation_pct: float = 0.005
     fee_rate: float = 0.0006
     mid_term_tp_pct: float = 0.025
+    
+    # Режим дневной торговли
+    enable_day_trading_mode: bool = False  # Включить режим дневной торговли
+    trading_start_hour: int = 10  # Час начала торгов (МСК)
+    trading_end_hour: int = 23  # Час окончания торгов (МСК)
+    close_positions_on_day_end: bool = True  # Закрывать позиции в конце торгового дня
     long_term_tp_pct: float = 0.04
     long_term_sl_pct: float = 0.02
     long_term_ignore_reverse: bool = True
