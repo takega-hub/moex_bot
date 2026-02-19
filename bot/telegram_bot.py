@@ -57,6 +57,7 @@ class TelegramBot:
         self.waiting_for_risk_setting = {}  # user_id -> setting_name
         self.waiting_for_ml_setting = {}  # user_id -> setting_name
         self.waiting_for_strategy_setting = {}  # user_id -> setting_name
+        self.best_mtf_suggestions = {}  # ticker -> (model_1h, model_15m)
 
     async def start(self):
         """Start Telegram bot."""
@@ -898,6 +899,11 @@ class TelegramBot:
             elif query.data.startswith("select_mtf_models_"):
                 ticker = query.data.replace("select_mtf_models_", "")
                 await self.show_mtf_model_selection(query, ticker)
+            elif query.data.startswith("find_best_mtf_"):
+                ticker = query.data.replace("find_best_mtf_", "")
+                user_id = query.from_user.id
+                await query.answer("🔍 Запущен поиск лучших комбинаций MTF...")
+                asyncio.create_task(self.find_best_mtf_combinations_async(ticker, user_id))
             elif query.data.startswith("select_mtf_1h_"):
                 ticker = query.data.replace("select_mtf_1h_", "")
                 await self.show_mtf_timeframe_selection(query, ticker, "1h")
@@ -911,6 +917,9 @@ class TelegramBot:
                     timeframe = parts[1]
                     model_index = int(parts[2]) if len(parts) > 2 else 0
                     await self.select_mtf_model(query, ticker, timeframe, model_index)
+            elif query.data.startswith("apply_best_mtf_"):
+                ticker = query.data.replace("apply_best_mtf_", "")
+                await self.apply_best_mtf_suggestion(query, ticker)
             elif query.data.startswith("apply_mtf_strategy_"):
                 ticker = query.data.replace("apply_mtf_strategy_", "")
                 await self.apply_mtf_strategy(query, ticker)
@@ -1473,6 +1482,112 @@ class TelegramBot:
             logger.error(f"❌ Error saving MTF models to {mtf_models_file}: {e}")
             raise
     
+    async def find_best_mtf_combinations_async(self, ticker: str, user_id: int):
+        """Асинхронный запуск поиска лучших комбинаций MTF."""
+        ticker = ticker.upper()
+        
+        try:
+            await self.app.bot.send_message(
+                chat_id=user_id,
+                text=f"🔍 Поиск лучших комбинаций MTF для {ticker}...\nЭто может занять некоторое время (от 1 до 10 минут)."
+            )
+            
+            # Добавляем путь к tools
+            tools_path = Path(__file__).parent.parent / "tools"
+            if str(tools_path) not in sys.path:
+                sys.path.append(str(tools_path))
+                
+            try:
+                from select_best_mtf_combinations import run_mtf_backtest_all_combinations
+            except ImportError:
+                # Fallback if running from root
+                sys.path.append("tools")
+                from select_best_mtf_combinations import run_mtf_backtest_all_combinations
+            
+            # Запускаем в отдельном потоке
+            logger.info(f"Starting MTF optimization for {ticker}...")
+            
+            df_results = await asyncio.to_thread(
+                run_mtf_backtest_all_combinations,
+                symbol=ticker,
+                days_back=30,  # Стандартный период
+                initial_balance=100000.0,
+                risk_per_trade=0.02,
+                leverage=1
+            )
+            
+            if df_results is not None and not df_results.empty:
+                best_combo = df_results.iloc[0]
+                model_1h_path = best_combo['model_1h']
+                model_15m_path = best_combo['model_15m']
+                
+                # Убираем расширение .pkl для сохранения и отображения
+                model_1h = Path(model_1h_path).stem
+                model_15m = Path(model_15m_path).stem
+                
+                pnl = best_combo['total_pnl_pct']
+                trades = best_combo['total_trades']
+                wr = best_combo['win_rate']
+                
+                # Сохраняем предложение для пользователя
+                self.best_mtf_suggestions[ticker] = (model_1h, model_15m)
+                
+                text = (
+                    f"🏆 ЛУЧШАЯ КОМБИНАЦИЯ ДЛЯ {ticker}:\n\n"
+                    f"1h: {model_1h}\n"
+                    f"15m: {model_15m}\n\n"
+                    f"💰 PnL: {pnl:.2f}%\n"
+                    f"📊 Сделок: {trades}\n"
+                    f"🎯 Win Rate: {wr:.1f}%\n\n"
+                    f"Хотите применить эту комбинацию?"
+                )
+                
+                # Кнопка для применения
+                keyboard = [
+                    [InlineKeyboardButton("✅ Применить лучшую", callback_data=f"apply_best_mtf_{ticker}")],
+                    [InlineKeyboardButton("🔙 Меню MTF", callback_data=f"select_mtf_models_{ticker}")]
+                ]
+                
+                await self.app.bot.send_message(
+                    chat_id=user_id,
+                    text=text,
+                    reply_markup=InlineKeyboardMarkup(keyboard)
+                )
+                logger.info(f"MTF optimization for {ticker} completed. Best: {model_1h} + {model_15m}")
+            else:
+                await self.app.bot.send_message(
+                    chat_id=user_id,
+                    text=f"❌ Не удалось найти комбинации для {ticker}.\nВозможно, нет моделей или данных.",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Меню MTF", callback_data=f"select_mtf_models_{ticker}")]])
+                )
+                logger.warning(f"MTF optimization for {ticker} returned no results")
+                
+        except Exception as e:
+            logger.error(f"Error in find_best_mtf_combinations_async for {ticker}: {e}", exc_info=True)
+            await self.app.bot.send_message(
+                chat_id=user_id,
+                text=f"❌ Ошибка при поиске комбинаций: {str(e)[:100]}",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Меню MTF", callback_data=f"select_mtf_models_{ticker}")]])
+            )
+
+    async def apply_best_mtf_suggestion(self, query, ticker: str):
+        """Применяет предложенную лучшую комбинацию MTF."""
+        ticker = ticker.upper()
+        
+        if ticker not in self.best_mtf_suggestions:
+            await query.answer("❌ Предложение устарело или не найдено.", show_alert=True)
+            return
+            
+        model_1h, model_15m = self.best_mtf_suggestions[ticker]
+        
+        # Сохраняем модели
+        self.save_mtf_models_for_instrument(ticker, model_1h, model_15m)
+        
+        await query.answer(f"✅ Модели сохранены: 1h={model_1h}, 15m={model_15m}")
+        
+        # Возвращаемся в меню выбора, где уже можно нажать "Применить MTF стратегию"
+        await self.show_mtf_model_selection(query, ticker)
+
     async def show_mtf_model_selection(self, query, ticker: str):
         """Показывает меню выбора MTF моделей для инструмента."""
         ticker = ticker.upper()
@@ -1496,6 +1611,7 @@ class TelegramBot:
         keyboard = [
             [InlineKeyboardButton("⏰ Выбрать 1h модель", callback_data=f"select_mtf_1h_{ticker}")],
             [InlineKeyboardButton("⏱ Выбрать 15m модель", callback_data=f"select_mtf_15m_{ticker}")],
+            [InlineKeyboardButton("🔍 Найти лучшие комбинации", callback_data=f"find_best_mtf_{ticker}")],
             [InlineKeyboardButton("✅ Применить MTF стратегию", callback_data=f"apply_mtf_strategy_{ticker}")],
             [InlineKeyboardButton("🔙 Назад", callback_data="settings_models")]
         ]

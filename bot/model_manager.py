@@ -54,7 +54,17 @@ class ModelManager:
             initial_balance = 100000.0
         
         try:
-            from backtest_ml_strategy import run_exact_backtest
+            # Add tools directory to path to import backtest_ml_strategy
+            tools_path = Path(__file__).parent.parent / "tools"
+            if str(tools_path) not in sys.path:
+                sys.path.append(str(tools_path))
+                
+            try:
+                from backtest_ml_strategy import run_exact_backtest
+            except ImportError:
+                # Fallback if running from root
+                sys.path.append("tools")
+                from backtest_ml_strategy import run_exact_backtest
             
             logger.info(f"[test_model] Starting backtest for {model_path} on {instrument} ({days} days, balance={initial_balance:.2f} руб)")
             
