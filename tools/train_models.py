@@ -5,14 +5,16 @@
 import warnings
 import os
 import sys
+from pathlib import Path
+
+# Добавляем корневую директорию проекта в sys.path ПЕРЕД импортом модулей бота
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
 from bot.ml.model_trainer import ModelTrainer, TripleEnsemble, QuadEnsemble, LIGHTGBM_AVAILABLE, LSTM_AVAILABLE
 
 # Подавляем предупреждения
 os.environ['PYTHONWARNINGS'] = 'ignore::UserWarning'
 warnings.filterwarnings('ignore')
-
-from pathlib import Path
-sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import pandas as pd
 import numpy as np
