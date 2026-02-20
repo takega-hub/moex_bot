@@ -204,12 +204,12 @@ class TradingLoop:
                 
                 cycle_count += 1
                 
-                current_hour = datetime.now().hour
+                current_hour = self.get_msk_time().hour
                 
                 # Проверка закрытия позиций в конце дня (в 23:00 МСК)
                 if getattr(self.settings.risk, 'enable_day_trading_mode', False):
                     if current_hour >= 23 and last_close_check_hour != 23:
-                        logger.info("[DayTrading] 🌙 Начало ночи - закрываем все позиции")
+                        logger.info("[DayTrading] 🌙 Начало ночи (23:00 МСК) - закрываем все позиции")
                         await self.close_all_positions_end_of_day()
                         last_close_check_hour = 23
                     elif current_hour < 10 and last_close_check_hour != -1:
@@ -1726,12 +1726,21 @@ class TradingLoop:
         except Exception as e:
             logger.error(f"[{ticker}] ❌ Error closing position: {e}", exc_info=True)
     
+    def get_msk_time(self) -> datetime:
+        """Возвращает текущее время в Московском часовом поясе (МСК)."""
+        try:
+            import pytz
+            msk_tz = pytz.timezone('Europe/Moscow')
+            return datetime.now(msk_tz)
+        except ImportError:
+            return datetime.now() + timedelta(hours=3)
+    
     def is_trading_time(self) -> bool:
         """Проверяет, находимся ли мы в торговом окне (МСК)."""
         if not getattr(self.settings.risk, 'enable_day_trading_mode', False):
             return True
         
-        now = datetime.now()
+        now = self.get_msk_time()
         trading_start = getattr(self.settings.risk, 'trading_start_hour', 10)
         trading_end = getattr(self.settings.risk, 'trading_end_hour', 23)
         
